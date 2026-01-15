@@ -100,7 +100,7 @@ def get_intensity_stats(path: str, max_size=4000) -> dict:
     stats["max"] = float(intensity_scaled[valid_mask].max())
     return stats
 
-def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, max_size=4000):
+def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, min_inertia_ratio: float = 0.1, max_size=4000):
     """
     Blob-based leak detection using OpenCV's SimpleBlobDetector.
     
@@ -113,6 +113,10 @@ def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, max_s
                       OpenCV searches from minThreshold (30% of this) to this value.
                       Lower = more restrictive = fewer leaks (darker threshold)
         min_size_percent: Minimum blob area as percentage of image area (e.g. 0.1 = 0.1%)
+        min_inertia_ratio: Minimum inertia ratio (0.0-1.0) to filter elongated shapes.
+                          Lower values allow more elongated shapes (lines, ellipses).
+                          Higher values only allow rounder shapes (circles).
+                          Default: 0.1
         max_size: Maximum size for downsampling (same as display)
     
     Returns:
@@ -132,6 +136,7 @@ def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, max_s
     # Clamp inputs defensively
     threshold_value = float(np.clip(rgb_threshold, 0.0, 255.0))
     min_size_percent = float(max(min_size_percent, 0.0))
+    min_inertia_ratio = float(np.clip(min_inertia_ratio, 0.0001, 1.0))
 
     # Convert to uint8 for OpenCV (already in 0-255 range)
     intensity_uint8 = np.clip(intensity_scaled, 0, 255).astype(np.uint8)
@@ -179,7 +184,7 @@ def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, max_s
     
     # Filter by inertia ratio: exclude very elongated shapes
     params.filterByInertia = True
-    params.minInertiaRatio = 0.1  # Allow some elongation
+    params.minInertiaRatio = min_inertia_ratio  # User-controlled: lower = allow more elongation
     params.maxInertiaRatio = 1.0
 
     # Create detector and detect blobs
