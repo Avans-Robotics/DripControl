@@ -100,28 +100,123 @@ def get_intensity_stats(path: str, max_size=4000) -> dict:
     stats["max"] = float(intensity_scaled[valid_mask].max())
     return stats
 
+
+def _inertia_ratio_from_moments(mu20: float, mu02: float, mu11: float) -> float:
+    """
+    Compute inertia ratio (min/max eigenvalue) from central moments.
+    Returns 0-1; 1 = circle, 0 = line.
+    """
+    trace = mu20 + mu02
+    det = mu20 * mu02 - mu11 * mu11
+    if trace <= 0:
+        return 0.0
+    disc = trace * trace - 4 * det
+    if disc < 0:
+        disc = 0.0
+    sqrt_disc = np.sqrt(disc)
+    lam_max = (trace + sqrt_disc) / 2.0
+    lam_min = (trace - sqrt_disc) / 2.0
+    if lam_max <= 0:
+        return 0.0
+    return float(lam_min / lam_max)
+
+
+def _single_threshold_detection(
+    intensity_uint8: np.ndarray,
+    intensity_scaled: np.ndarray,
+    valid_mask: np.ndarray,
+    threshold_value: float,
+    min_area_px: int,
+    max_area_px: int,
+    min_inertia_ratio: float,
+    apply_filters: bool,
+) -> tuple:
+    """
+    Detect dark blobs using a single intensity threshold.
+    Pixels with intensity > threshold are ignored (background).
+    Returns (centroids list, components_before for debug,
+             raw binary image, opened binary image, detection_info dict).
+    """
+    h, w = intensity_uint8.shape
+    thresh_val = float(np.clip(threshold_value, 0.0, 255.0))
+    # Raw binary: foreground (intensity <= thresh) = 0, background = 255
+    _, binary_raw = cv2.threshold(intensity_uint8, thresh_val, 255, cv2.THRESH_BINARY_INV)
+
+    # Morphological smoothing: opening on the binary image to remove tiny specks
+    # (work purely in the binary domain, after thresholding)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    binary_opened = cv2.morphologyEx(binary_raw, cv2.MORPH_OPEN, kernel)
+
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_opened, connectivity=8)
+    components_before = []
+    components_after = []
+
+    for i in range(1, num_labels):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        cx, cy = centroids[i, 0], centroids[i, 1]
+        if area <= 0:
+            continue
+        mask = (labels == i).astype(np.uint8)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+        M = cv2.moments(contours[0])
+        if M["m00"] <= 0:
+            continue
+        mu20 = M["mu20"] / M["m00"]
+        mu02 = M["mu02"] / M["m00"]
+        mu11 = M["mu11"] / M["m00"]
+        inertia = _inertia_ratio_from_moments(mu20, mu02, mu11)
+        x_int, y_int = int(round(cx)), int(round(cy))
+        intensity_at_point = float(intensity_scaled[y_int, x_int]) if 0 <= y_int < h and 0 <= x_int < w else 0.0
+        components_before.append((area, inertia, intensity_at_point, (x_int, y_int)))
+        if not apply_filters:
+            components_after.append((intensity_at_point, (x_int, y_int)))
+            continue
+        if area < min_area_px or area > max_area_px or inertia < min_inertia_ratio:
+            continue
+        components_after.append((intensity_at_point, (x_int, y_int)))
+
+    components_after.sort(key=lambda t: t[0])
+    centroids_sorted = [xy for _, xy in components_after]
+    detection_info = {
+        'threshold': thresh_val,
+        'min_area_px': min_area_px,
+        'max_area_px': max_area_px,
+        'min_inertia': min_inertia_ratio,
+        'blobs_before_filtering': len(components_before),
+        'blobs_after_filtering': len(centroids_sorted),
+    }
+    return centroids_sorted, components_before, binary_raw, binary_opened, detection_info
+
+
+def _threshold_and_area_params(rgb_threshold: float, min_size_percent: float, min_inertia_ratio: float,
+                               image_height: int, image_width: int) -> tuple:
+    """Single threshold and area limits. Returns (threshold, min_area_px, max_area_px, min_inertia, info_dict)."""
+    threshold_value = float(np.clip(rgb_threshold, 0.0, 255.0))
+    min_size_percent = float(max(min_size_percent, 0.0))
+    min_inertia_ratio = float(np.clip(min_inertia_ratio, 0.0001, 1.0))
+    min_area_px = max(1, int((min_size_percent / 100.0) * float(image_height * image_width)))
+    max_area_px = int(0.5 * float(image_height * image_width))
+    info = {'threshold': threshold_value, 'min_area_px': min_area_px, 'max_area_px': max_area_px, 'min_inertia': min_inertia_ratio}
+    return threshold_value, min_area_px, max_area_px, min_inertia_ratio, info
+
+
 def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, min_inertia_ratio: float = 0.1, max_size=4000):
     """
-    Blob-based leak detection using OpenCV's SimpleBlobDetector.
-    
-    A "leak" is treated as a dark blob detected by OpenCV's blob detector,
-    filtered by area and shape characteristics.
-    
+    Leak detection using a single intensity threshold.
+    Pixels with intensity > threshold are ignored; dark blobs (intensity <= threshold) are
+    found as connected components and filtered by area and inertia ratio.
+
     Args:
         path: Path to the GeoTIFF file
-        rgb_threshold: Maximum intensity threshold value (0-255) for blob detection.
-                      OpenCV searches from minThreshold (30% of this) to this value.
-                      Lower = more restrictive = fewer leaks (darker threshold)
-        min_size_percent: Minimum blob area as percentage of image area (e.g. 0.1 = 0.1%)
-        min_inertia_ratio: Minimum inertia ratio (0.0-1.0) to filter elongated shapes.
-                          Lower values allow more elongated shapes (lines, ellipses).
-                          Higher values only allow rounder shapes (circles).
-                          Default: 0.1
-        max_size: Maximum size for downsampling (same as display)
-    
+        rgb_threshold: Single intensity threshold (0-255). Anything above this is ignored.
+        min_size_percent: Minimum blob area as percentage of image area
+        min_inertia_ratio: Minimum inertia ratio (0.0-1.0) to filter elongated shapes
+        max_size: Maximum size for downsampling
+
     Returns:
-        Tuple of (list of (x, y) blob centroids, dict with detection parameters used)
-        Centroids are sorted by mean intensity (darkest first)
+        Tuple of (list of (x, y) centroids, detection_info dict). Centroids sorted darkest first.
     """
     intensity, valid_mask = _load_intensity(path, max_size=max_size)
     if not np.any(valid_mask):
@@ -132,90 +227,81 @@ def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, min_i
         return [], {}
 
     h, w = intensity.shape
-
-    # Clamp inputs defensively
-    threshold_value = float(np.clip(rgb_threshold, 0.0, 255.0))
-    min_size_percent = float(max(min_size_percent, 0.0))
-    min_inertia_ratio = float(np.clip(min_inertia_ratio, 0.0001, 1.0))
-
-    # Convert to uint8 for OpenCV (already in 0-255 range)
     intensity_uint8 = np.clip(intensity_scaled, 0, 255).astype(np.uint8)
-    
-    # Apply valid mask: set invalid pixels to white (255) so they won't be detected as dark blobs
     intensity_uint8[~valid_mask] = 255
 
-    # Calculate minimum area in pixels
-    min_area_px = int((min_size_percent / 100.0) * float(h * w))
-    # Set a reasonable maximum area (e.g., 50% of image)
-    max_area_px = int(0.5 * float(h * w))
+    thresh, min_area_px, max_area_px, min_inertia, _ = _threshold_and_area_params(
+        rgb_threshold, min_size_percent, min_inertia_ratio, h, w
+    )
+    centroids, _, _, _, detection_info = _single_threshold_detection(
+        intensity_uint8, intensity_scaled, valid_mask,
+        thresh, min_area_px, max_area_px, min_inertia, apply_filters=True
+    )
+    return centroids, detection_info
 
-    # Configure OpenCV SimpleBlobDetector parameters
-    params = cv2.SimpleBlobDetector_Params()
-    
-    # Threshold parameters: use the rgb_threshold as maxThreshold
-    # OpenCV's detector uses multiple thresholds internally
-    # We set minThreshold lower and maxThreshold to our threshold value
-    min_threshold = max(10, int(threshold_value * 0.3))  # Start at 30% of max
-    max_threshold = int(threshold_value)  # Use our threshold as max
-    threshold_step = max(5, int(threshold_value / 20))  # Adaptive step size
-    
-    params.minThreshold = min_threshold
-    params.maxThreshold = max_threshold
-    params.thresholdStep = threshold_step
-    
-    # Filter by color: detect dark blobs (blobColor = 0)
-    params.filterByColor = True
-    params.blobColor = 0
-    
-    # Filter by area
-    params.filterByArea = True
-    params.minArea = max(1, min_area_px)
-    params.maxArea = max_area_px
-    
-    # Filter by circularity: exclude very elongated shapes (likely irrigation lines)
-    params.filterByCircularity = True
-    params.minCircularity = 0.1  # Allow somewhat elongated shapes
-    params.maxCircularity = 1.0
-    
-    # Filter by convexity: ensure blobs are reasonably convex
-    params.filterByConvexity = True
-    params.minConvexity = 0.5  # Allow some concavity
-    params.maxConvexity = 1.0
-    
-    # Filter by inertia ratio: exclude very elongated shapes
-    params.filterByInertia = True
-    params.minInertiaRatio = min_inertia_ratio  # User-controlled: lower = allow more elongation
-    params.maxInertiaRatio = 1.0
 
-    # Create detector and detect blobs
-    detector = cv2.SimpleBlobDetector_create(params)
-    keypoints = detector.detect(intensity_uint8)
-
-    # Convert keypoints to (x, y) tuples and sort by intensity (darkest first)
-    leaks_with_score = []
-    for kp in keypoints:
-        x, y = int(round(kp.pt[0])), int(round(kp.pt[1]))
-        if 0 <= x < w and 0 <= y < h:
-            # Get intensity at this point for sorting
-            intensity_at_point = float(intensity_scaled[y, x])
-            leaks_with_score.append((intensity_at_point, (x, y)))
-
-    # Sort by intensity (darkest first)
-    leaks_with_score.sort(key=lambda t: t[0])
+def detect_leaks_with_steps(path: str, rgb_threshold: float, min_size_percent: float, min_inertia_ratio: float = 0.1, max_size=4000):
+    """
+    Blob-based leak detection with intermediate step visualization.
     
-    # Return detection info for UI display
-    detection_info = {
-        'min_threshold': min_threshold,
-        'max_threshold': max_threshold,
-        'threshold_step': threshold_step,
-        'min_area_px': min_area_px,
-        'max_area_px': max_area_px,
-        'min_circularity': params.minCircularity,
-        'min_convexity': params.minConvexity,
-        'min_inertia': params.minInertiaRatio
+    Returns the same as detect_leaks, plus intermediate images for visualization.
+    
+    Returns:
+        Tuple of (leaks list, detection_info dict, steps_dict with intermediate images)
+    """
+    intensity, valid_mask = _load_intensity(path, max_size=max_size)
+    if not np.any(valid_mask):
+        return [], {}, {}
+    
+    intensity_scaled, valid_pixels = _normalize_intensity(intensity, valid_mask)
+    if valid_pixels.size == 0:
+        return [], {}, {}
+    
+    h, w = intensity.shape
+    
+    # Convert to uint8 for OpenCV
+    intensity_uint8 = np.clip(intensity_scaled, 0, 255).astype(np.uint8)
+    intensity_uint8[~valid_mask] = 255
+
+    # Preprocessing debug steps (before any blob detection)
+    step0_valid_mask = (valid_mask.astype(np.uint8) * 255)  # valid=white, invalid=black
+    step0_intensity_scaled = np.clip(intensity_scaled, 0, 255).astype(np.uint8).copy()
+    step0_intensity_scaled[~valid_mask] = 0  # invalid pixels black for clarity
+    step0_intensity_uint8 = intensity_uint8.copy()  # invalid pixels set to 255 (input to blob detector)
+
+    thresh, min_area_px, max_area_px, min_inertia, _ = _threshold_and_area_params(
+        rgb_threshold, min_size_percent, min_inertia_ratio, h, w
+    )
+    centroids, components_before, binary_raw, binary_opened, detection_info = _single_threshold_detection(
+        intensity_uint8, intensity_scaled, valid_mask,
+        thresh, min_area_px, max_area_px, min_inertia, apply_filters=True
+    )
+
+    steps = {
+        'step0_valid_mask': step0_valid_mask,
+        'step0_intensity_scaled': step0_intensity_scaled,
+        'step0_intensity_uint8': step0_intensity_uint8,
+        'step1_original': intensity_uint8.copy(),
+        # Single-threshold binaries: before and after morphological opening
+        'step2_binary_raw': binary_raw,
+        'step2_binary': binary_opened,  # after opening (used for detection)
+        'step2_threshold_value': thresh,
+        'step3_before_filtering': None,
+        'step4_after_filtering': None,
     }
-    
-    return [xy for _, xy in leaks_with_score], detection_info
+    # Step 3: Draw all connected components (before area/inertia filter)
+    img_before = cv2.cvtColor(intensity_uint8, cv2.COLOR_GRAY2BGR)
+    for _area, _inertia, _intensity, (x, y) in components_before:
+        radius = max(2, int(np.sqrt(_area / np.pi)))
+        cv2.circle(img_before, (x, y), min(radius, 50), (0, 255, 0), 1)
+    steps['step3_before_filtering'] = img_before
+    # Step 4: Draw filtered blobs
+    img_after = cv2.cvtColor(intensity_uint8, cv2.COLOR_GRAY2BGR)
+    for x, y in centroids:
+        cv2.circle(img_after, (x, y), 5, (0, 0, 255), 2)
+    steps['step4_after_filtering'] = img_after
+
+    return centroids, detection_info, steps
 
 def raster_to_qimage(path: str, sensitivity: float, max_size=4000, leaks=None, use_original_colors=False) -> QImage:
     with rasterio.open(path) as ds:

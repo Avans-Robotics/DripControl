@@ -1,17 +1,19 @@
 from PySide6.QtWidgets import (
     QMainWindow, QPushButton, QFileDialog,
     QLabel, QVBoxLayout, QWidget, QScrollArea,
-    QSlider
+    QSlider, QCheckBox, QDialog, QHBoxLayout, QGridLayout
 )
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
-from core.raster import load_raster, raster_to_qimage, detect_leaks, get_intensity_stats
+from PySide6.QtGui import QPixmap, QImage
+from core.raster import load_raster, raster_to_qimage, detect_leaks, get_intensity_stats, detect_leaks_with_steps
+import numpy as np
+import cv2
 
 # Size slider configuration
-MIN_SIZE_PERCENT = 0.0  # Minimum size as percentage of image
-MAX_SIZE_PERCENT = 50.0  # Maximum size as percentage of image
+MAX_SIZE_PERCENT = 1.0  # Maximum size as percentage of image
 SIZE_STEP_PERCENT = 0.001  # Step size in percentage (0.001% increments)
+MIN_SIZE_PERCENT = SIZE_STEP_PERCENT  # Minimum size as percentage of image
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -39,11 +41,10 @@ class MainWindow(QMainWindow):
         self.slider.setEnabled(False)
         self.slider.valueChanged.connect(self.update_image)
 
-        # Create threshold slider for leak detection
-        # Using direct intensity values (0.0-255.0) with 0.1 precision
-        # Slider uses integers 0-2550 internally, divided by 10.0 for float values
-        # Lower values = more restrictive = fewer leaks (darker threshold)
-        # Higher values = less restrictive = more leaks (brighter threshold)
+        # Create threshold slider for leak detection (single threshold)
+        # Intensity > threshold is ignored; only darker pixels (<= threshold) are candidate leaks
+        # Slider: 0-2550 internally, divided by 10.0 for float (0.0-255.0)
+        # Lower = more restrictive (fewer leaks); higher = less restrictive (more leaks)
         self.threshold_slider = QSlider(Qt.Horizontal)
         self.threshold_slider.setMinimum(0)
         self.threshold_slider.setMaximum(2550)  # 0-255.0 with 0.1 steps
@@ -51,8 +52,8 @@ class MainWindow(QMainWindow):
         self.threshold_slider.setEnabled(False)
         self.threshold_slider.valueChanged.connect(self.update_image)
         
-        # Label to show actual threshold range being used
-        self.threshold_info_label = QLabel("Threshold range: -")
+        # Label to show threshold and detection stats
+        self.threshold_info_label = QLabel("Threshold: -")
         self.threshold_info_label.setEnabled(False)
 
         # Create minimum size slider for leak detection
@@ -84,12 +85,17 @@ class MainWindow(QMainWindow):
         # Leak count display
         self.leak_count_label = QLabel("Leaks detected: 0")
         self.leak_count_label.setEnabled(False)
+        
+        # Debug mode checkbox
+        self.debug_checkbox = QCheckBox("Show detection steps")
+        self.debug_checkbox.setEnabled(False)
+        self.debug_checkbox.stateChanged.connect(self.update_image)
 
         layout = QVBoxLayout()
         layout.addWidget(self.load_btn)
         layout.addWidget(QLabel("Sensitivity (display contrast)"))
         layout.addWidget(self.slider)
-        layout.addWidget(QLabel("Max Intensity Threshold (0-255)"))
+        layout.addWidget(QLabel("Intensity Threshold (0-255) — pixels above this are ignored"))
         layout.addWidget(self.threshold_slider)
         layout.addWidget(self.threshold_info_label)
         layout.addWidget(QLabel(f"Min Size (% of image) - Range: {MIN_SIZE_PERCENT}% to {MAX_SIZE_PERCENT}%"))
@@ -97,6 +103,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Min Inertia Ratio (0.0-1.0) - lower = allow elongated shapes"))
         layout.addWidget(self.inertia_slider)
         layout.addWidget(self.leak_count_label)
+        layout.addWidget(self.debug_checkbox)
         layout.addWidget(self.status)
         layout.addWidget(scroll)
 
@@ -150,6 +157,7 @@ class MainWindow(QMainWindow):
         self.inertia_slider.setEnabled(True)
         self.leak_count_label.setEnabled(True)
         self.threshold_info_label.setEnabled(True)
+        self.debug_checkbox.setEnabled(True)
         self.update_image()
 
     def update_image(self):
@@ -162,21 +170,30 @@ class MainWindow(QMainWindow):
         min_size_percent = self.size_slider.value() * SIZE_STEP_PERCENT
         min_inertia_ratio = self.inertia_slider.value() / 100.0  # Convert to float (0.0-1.0)
         
-        # Detect leaks
-        leaks, detection_info = detect_leaks(self.current_path, rgb_threshold, min_size_percent, min_inertia_ratio)
+        # Detect leaks (with or without debug steps)
+        if self.debug_checkbox.isChecked():
+            leaks, detection_info, steps = detect_leaks_with_steps(
+                self.current_path, rgb_threshold, min_size_percent, min_inertia_ratio
+            )
+            self._show_debug_window(steps, detection_info)
+        else:
+            leaks, detection_info = detect_leaks(
+                self.current_path, rgb_threshold, min_size_percent, min_inertia_ratio
+            )
         
         # Update leak count
         self.leak_count_label.setText(f"Leaks detected: {len(leaks)}")
         
-        # Update threshold info display
-        min_thresh = detection_info['min_threshold']
-        max_thresh = detection_info['max_threshold']
-        step = detection_info['threshold_step']
+        # Update threshold info display (single threshold)
+        thresh = detection_info.get('threshold', detection_info.get('max_threshold', 'N/A'))
         inertia = detection_info['min_inertia']
+        before_count = detection_info.get('blobs_before_filtering', 'N/A')
+        after_count = detection_info.get('blobs_after_filtering', len(leaks))
         self.threshold_info_label.setText(
-            f"Threshold range: {min_thresh}-{max_thresh} (step: {step}) | "
+            f"Threshold: {thresh} (intensity > {thresh} ignored) | "
             f"Min area: {detection_info['min_area_px']} px | "
-            f"Inertia ratio: {inertia:.2f}"
+            f"Inertia ratio: {inertia:.2f} | "
+            f"Blobs: {before_count} → {after_count} (after filtering)"
         )
         
         # Render image with leak markers (use original colors for debugging)
@@ -184,3 +201,122 @@ class MainWindow(QMainWindow):
         pixmap = QPixmap.fromImage(qimg)
         # Use smooth transformation for high-quality scaling when fitting to viewport
         self.image_label.setPixmap(pixmap)
+    
+    def _numpy_to_qimage(self, img: np.ndarray) -> QImage:
+        """Convert numpy array to QImage for display."""
+        if len(img.shape) == 2:  # Grayscale
+            h, w = img.shape
+            qimg = QImage(img.data, w, h, w, QImage.Format_Grayscale8)
+        elif len(img.shape) == 3:  # Color (BGR from OpenCV)
+            h, w, ch = img.shape
+            # Convert BGR to RGB
+            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            qimg = QImage(rgb_img.data, w, h, 3 * w, QImage.Format_RGB888)
+        else:
+            return QImage()
+        return qimg.copy()
+    
+    def _show_debug_window(self, steps: dict, detection_info: dict):
+        """Show a debug window with all detection steps."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Blob Detection Steps")
+        dialog.setMinimumSize(1200, 800)
+        
+        layout = QGridLayout()
+        row = 0
+
+        # Preprocessing: Valid mask
+        if 'step0_valid_mask' in steps:
+            label = QLabel("Preprocessing: Valid Mask (white = valid, black = invalid)")
+            label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(label, row, 0)
+            img_label = QLabel()
+            qimg = self._numpy_to_qimage(steps['step0_valid_mask'])
+            img_label.setPixmap(QPixmap.fromImage(qimg).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            layout.addWidget(img_label, row + 1, 0)
+
+        # Preprocessing: Intensity scaled (valid pixels)
+        if 'step0_intensity_scaled' in steps:
+            label = QLabel("Preprocessing: Intensity Scaled (valid pixels; invalid = black)")
+            label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(label, row, 1)
+            img_label = QLabel()
+            qimg = self._numpy_to_qimage(steps['step0_intensity_scaled'])
+            img_label.setPixmap(QPixmap.fromImage(qimg).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            layout.addWidget(img_label, row + 1, 1)
+
+        # Preprocessing: Intensity uint8 corrected for valid mask
+        if 'step0_intensity_uint8' in steps:
+            label = QLabel("Preprocessing: Intensity uint8 (invalid pixels → 255, input to blob detector)")
+            label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(label, row, 2)
+            img_label = QLabel()
+            qimg = self._numpy_to_qimage(steps['step0_intensity_uint8'])
+            img_label.setPixmap(QPixmap.fromImage(qimg).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            layout.addWidget(img_label, row + 1, 2)
+
+        row += 2
+
+        # Step 1: Original image (input to blob detector)
+        if 'step1_original' in steps:
+            label = QLabel("Step 1: Original Intensity Image (input to blob detector)")
+            label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(label, row, 0)
+            img_label = QLabel()
+            qimg = self._numpy_to_qimage(steps['step1_original'])
+            img_label.setPixmap(QPixmap.fromImage(qimg).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            layout.addWidget(img_label, row + 1, 0)
+        
+        # Step 2: Single-threshold binary BEFORE opening
+        if 'step2_binary_raw' in steps:
+            thresh_val = steps.get('step2_threshold_value', 'N/A')
+            label = QLabel(f"Step 2: Single Threshold Binary (before opening)\n"
+                           f"(threshold = {thresh_val}; intensity > {thresh_val} ignored)")
+            label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(label, row, 1)
+            img_label = QLabel()
+            qimg_raw = self._numpy_to_qimage(steps['step2_binary_raw'])
+            img_label.setPixmap(
+                QPixmap.fromImage(qimg_raw).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+            layout.addWidget(img_label, row + 1, 1)
+
+        # Step 3: Single-threshold binary AFTER opening (used for detection)
+        if 'step2_binary' in steps:
+            thresh_val = steps.get('step2_threshold_value', 'N/A')
+            label = QLabel("Step 3: Single Threshold Binary After Opening (used for detection)")
+            label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(label, row, 2)
+            img_label = QLabel()
+            qimg_opened = self._numpy_to_qimage(steps['step2_binary'])
+            img_label.setPixmap(
+                QPixmap.fromImage(qimg_opened).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+            layout.addWidget(img_label, row + 1, 2)
+        
+        row += 2
+
+        # Step 4: Connected components before area/inertia filter
+        if 'step3_before_filtering' in steps and steps['step3_before_filtering'] is not None:
+            blob_count_before = detection_info.get('blobs_before_filtering', 'N/A')
+            label = QLabel(f"Step 4: Connected Components ({blob_count_before} blobs)\n(Before min area / inertia filter)")
+            label.setAlignment(Qt.AlignCenter)
+            label.setWordWrap(True)
+            layout.addWidget(label, row, 0)
+            img_label = QLabel()
+            qimg = self._numpy_to_qimage(steps['step3_before_filtering'])
+            img_label.setPixmap(QPixmap.fromImage(qimg).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            layout.addWidget(img_label, row + 1, 0)
+        
+        # Step 5: After filtering
+        if 'step4_after_filtering' in steps and steps['step4_after_filtering'] is not None:
+            label = QLabel(f"Step 5: Blobs After Filtering ({detection_info.get('blobs_after_filtering', 'N/A')} blobs)")
+            label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(label, row, 1)
+            img_label = QLabel()
+            qimg = self._numpy_to_qimage(steps['step4_after_filtering'])
+            img_label.setPixmap(QPixmap.fromImage(qimg).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            layout.addWidget(img_label, row + 1, 1)
+        
+        dialog.setLayout(layout)
+        dialog.exec()
