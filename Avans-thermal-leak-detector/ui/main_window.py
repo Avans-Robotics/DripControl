@@ -1,12 +1,14 @@
 from PySide6.QtWidgets import (
     QMainWindow, QPushButton, QFileDialog,
     QLabel, QVBoxLayout, QWidget, QScrollArea,
-    QSlider, QCheckBox, QDialog, QHBoxLayout, QGridLayout
+    QSlider, QCheckBox, QDialog, QHBoxLayout, QGridLayout,
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
+    QRubberBand,
 )
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap, QImage
-from core.raster import load_raster, raster_to_qimage, detect_leaks, get_intensity_stats, detect_leaks_with_steps
+from PySide6.QtCore import Qt, QRect, QRectF
+from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter
+from core.raster import load_raster, raster_to_qimage, detect_leaks, get_intensity_stats
 import numpy as np
 import cv2
 
@@ -14,6 +16,55 @@ import cv2
 MAX_SIZE_PERCENT = 1.0  # Maximum size as percentage of image
 SIZE_STEP_PERCENT = 0.001  # Step size in percentage (0.001% increments)
 MIN_SIZE_PERCENT = SIZE_STEP_PERCENT  # Minimum size as percentage of image
+
+
+class DebugGraphicsView(QGraphicsView):
+    """
+    Zoomable/pannable view for debug window. Pan via left-drag (ScrollHandDrag);
+    zoom via mouse wheel; zoom to rect via right-drag rubber band.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setRenderHints(
+            self.renderHints() | QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform
+        )
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._rubber_origin = None
+        self._rubber_band = None
+
+    def wheelEvent(self, event: QWheelEvent):
+        factor = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
+        self.scale(factor, factor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            self._rubber_origin = event.position().toPoint()
+            if self._rubber_band is None:
+                self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
+            self._rubber_band.setGeometry(QRect(self._rubber_origin, self._rubber_origin))
+            self._rubber_band.show()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._rubber_band is not None and self._rubber_origin is not None:
+            r = QRect(self._rubber_origin, event.position().toPoint()).normalized()
+            self._rubber_band.setGeometry(r)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton and self._rubber_band is not None:
+            r = self._rubber_band.geometry()
+            self._rubber_band.hide()
+            self._rubber_origin = None
+            if r.width() > 4 and r.height() > 4:
+                rect_scene = QRectF(self.mapToScene(r.topLeft()), self.mapToScene(r.bottomRight()))
+                self.fitInView(rect_scene, Qt.AspectRatioMode.KeepAspectRatio)
+        super().mouseReleaseEvent(event)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -61,7 +112,7 @@ class MainWindow(QMainWindow):
         # Higher values = only larger leaks detected
         # Range: MIN_SIZE_PERCENT to MAX_SIZE_PERCENT with SIZE_STEP_PERCENT increments
         slider_max = int((MAX_SIZE_PERCENT - MIN_SIZE_PERCENT) / SIZE_STEP_PERCENT)
-        default_slider_value = int(1.0 / SIZE_STEP_PERCENT)  # Default 1% of image area
+        default_slider_value = int(slider_max / 10.0)  # Default MAX_SIZE_PERCENT% of image area
         
         self.size_slider = QSlider(Qt.Horizontal)
         self.size_slider.setMinimum(0)
@@ -69,18 +120,6 @@ class MainWindow(QMainWindow):
         self.size_slider.setValue(default_slider_value)
         self.size_slider.setEnabled(False)
         self.size_slider.valueChanged.connect(self.update_image)
-
-        # Create inertia ratio slider for leak detection
-        # Controls minimum inertia ratio (0.0-1.0) to filter elongated shapes
-        # Lower values = allow more elongated shapes (lines, ellipses)
-        # Higher values = only allow rounder shapes (circles)
-        # Slider uses integers 0-100 internally, divided by 100.0 for float values
-        self.inertia_slider = QSlider(Qt.Horizontal)
-        self.inertia_slider.setMinimum(0)
-        self.inertia_slider.setMaximum(100)  # 0.0-1.0 with 0.01 steps
-        self.inertia_slider.setValue(10)  # Default 0.1 (allow some elongation)
-        self.inertia_slider.setEnabled(False)
-        self.inertia_slider.valueChanged.connect(self.update_image)
 
         # Leak count display
         self.leak_count_label = QLabel("Leaks detected: 0")
@@ -100,8 +139,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.threshold_info_label)
         layout.addWidget(QLabel(f"Min Size (% of image) - Range: {MIN_SIZE_PERCENT}% to {MAX_SIZE_PERCENT}%"))
         layout.addWidget(self.size_slider)
-        layout.addWidget(QLabel("Min Inertia Ratio (0.0-1.0) - lower = allow elongated shapes"))
-        layout.addWidget(self.inertia_slider)
         layout.addWidget(self.leak_count_label)
         layout.addWidget(self.debug_checkbox)
         layout.addWidget(self.status)
@@ -139,7 +176,6 @@ class MainWindow(QMainWindow):
         # Avoid multiple redraws while setting defaults/enabling widgets.
         self.threshold_slider.blockSignals(True)
         self.size_slider.blockSignals(True)
-        self.inertia_slider.blockSignals(True)
         try:
             if default_threshold is not None:
                 # Slider is 0.1 precision (0-255.0 -> 0-2550)
@@ -149,12 +185,10 @@ class MainWindow(QMainWindow):
         finally:
             self.threshold_slider.blockSignals(False)
             self.size_slider.blockSignals(False)
-            self.inertia_slider.blockSignals(False)
 
         self.slider.setEnabled(True)
         self.threshold_slider.setEnabled(True)
         self.size_slider.setEnabled(True)
-        self.inertia_slider.setEnabled(True)
         self.leak_count_label.setEnabled(True)
         self.threshold_info_label.setEnabled(True)
         self.debug_checkbox.setEnabled(True)
@@ -168,17 +202,16 @@ class MainWindow(QMainWindow):
         rgb_threshold = self.threshold_slider.value() / 10.0  # Convert to float (0.0-255.0)
         # Convert slider value to percentage using the configured step size
         min_size_percent = self.size_slider.value() * SIZE_STEP_PERCENT
-        min_inertia_ratio = self.inertia_slider.value() / 100.0  # Convert to float (0.0-1.0)
         
         # Detect leaks (with or without debug steps)
         if self.debug_checkbox.isChecked():
-            leaks, detection_info, steps = detect_leaks_with_steps(
-                self.current_path, rgb_threshold, min_size_percent, min_inertia_ratio
+            leaks, detection_info, steps = detect_leaks(
+                self.current_path, rgb_threshold, min_size_percent, return_steps=True
             )
             self._show_debug_window(steps, detection_info)
         else:
             leaks, detection_info = detect_leaks(
-                self.current_path, rgb_threshold, min_size_percent, min_inertia_ratio
+                self.current_path, rgb_threshold, min_size_percent
             )
         
         # Update leak count
@@ -186,13 +219,11 @@ class MainWindow(QMainWindow):
         
         # Update threshold info display (single threshold)
         thresh = detection_info.get('threshold', detection_info.get('max_threshold', 'N/A'))
-        inertia = detection_info['min_inertia']
         before_count = detection_info.get('blobs_before_filtering', 'N/A')
         after_count = detection_info.get('blobs_after_filtering', len(leaks))
         self.threshold_info_label.setText(
             f"Threshold: {thresh} (intensity > {thresh} ignored) | "
             f"Min area: {detection_info['min_area_px']} px | "
-            f"Inertia ratio: {inertia:.2f} | "
             f"Blobs: {before_count} → {after_count} (after filtering)"
         )
         
@@ -216,107 +247,120 @@ class MainWindow(QMainWindow):
             return QImage()
         return qimg.copy()
     
+    def _add_debug_image(self, layout, views: list, row: int, col: int,
+                         title: str, img_data, detection_info: dict = None, extra: str = None) -> DebugGraphicsView | None:
+        """Add a label and a zoomable view for an image; append view to views. Returns the view or None."""
+        if img_data is None:
+            return None
+        qimg = self._numpy_to_qimage(img_data)
+        pix = QPixmap.fromImage(qimg)
+        if pix.isNull():
+            return None
+        scene = QGraphicsScene()
+        scene.setSceneRect(0, 0, pix.width(), pix.height())
+        item = QGraphicsPixmapItem(pix)
+        item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        scene.addItem(item)
+        view = DebugGraphicsView()
+        view.setScene(scene)
+        view.setFixedSize(400, 300)
+        label_text = title
+        if extra:
+            label_text = f"{title}\n{extra}"
+        label = QLabel(label_text)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setWordWrap(True)
+        layout.addWidget(label, row, col)
+        layout.addWidget(view, row + 1, col)
+        views.append(view)
+        return view
+
     def _show_debug_window(self, steps: dict, detection_info: dict):
-        """Show a debug window with all detection steps."""
+        """Show a debug window with all detection steps (zoomable views, independent)."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Blob Detection Steps")
         dialog.setMinimumSize(1200, 800)
-        
+
         layout = QGridLayout()
+        views: list[DebugGraphicsView] = []
         row = 0
 
-        # Preprocessing: Valid mask
+        # Preprocessing row
         if 'step0_valid_mask' in steps:
-            label = QLabel("Preprocessing: Valid Mask (white = valid, black = invalid)")
-            label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(label, row, 0)
-            img_label = QLabel()
-            qimg = self._numpy_to_qimage(steps['step0_valid_mask'])
-            img_label.setPixmap(QPixmap.fromImage(qimg).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            layout.addWidget(img_label, row + 1, 0)
-
-        # Preprocessing: Intensity scaled (valid pixels)
+            self._add_debug_image(
+                layout, views, row, 0,
+                "Preprocessing: Valid Mask (white = valid, black = invalid)",
+                steps['step0_valid_mask']
+            )
         if 'step0_intensity_scaled' in steps:
-            label = QLabel("Preprocessing: Intensity Scaled (valid pixels; invalid = black)")
-            label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(label, row, 1)
-            img_label = QLabel()
-            qimg = self._numpy_to_qimage(steps['step0_intensity_scaled'])
-            img_label.setPixmap(QPixmap.fromImage(qimg).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            layout.addWidget(img_label, row + 1, 1)
-
-        # Preprocessing: Intensity uint8 corrected for valid mask
+            self._add_debug_image(
+                layout, views, row, 1,
+                "Preprocessing: Intensity Scaled (valid pixels; invalid = black)",
+                steps['step0_intensity_scaled']
+            )
         if 'step0_intensity_uint8' in steps:
-            label = QLabel("Preprocessing: Intensity uint8 (invalid pixels → 255, input to blob detector)")
-            label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(label, row, 2)
-            img_label = QLabel()
-            qimg = self._numpy_to_qimage(steps['step0_intensity_uint8'])
-            img_label.setPixmap(QPixmap.fromImage(qimg).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            layout.addWidget(img_label, row + 1, 2)
-
+            self._add_debug_image(
+                layout, views, row, 2,
+                "Preprocessing: Intensity uint8 (invalid → 255, input to blob detector)",
+                steps['step0_intensity_uint8']
+            )
         row += 2
 
-        # Step 1: Original image (input to blob detector)
+        # Step 1, Gaussian blur, Step 2
         if 'step1_original' in steps:
-            label = QLabel("Step 1: Original Intensity Image (input to blob detector)")
-            label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(label, row, 0)
-            img_label = QLabel()
-            qimg = self._numpy_to_qimage(steps['step1_original'])
-            img_label.setPixmap(QPixmap.fromImage(qimg).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            layout.addWidget(img_label, row + 1, 0)
-        
-        # Step 2: Single-threshold binary BEFORE opening
+            self._add_debug_image(
+                layout, views, row, 0,
+                "Step 1: Original Intensity Image (input to blob detector)",
+                steps['step1_original']
+            )
+        if 'step1_blurred' in steps:
+            self._add_debug_image(
+                layout, views, row, 1,
+                "After Gaussian Blur (input to threshold)",
+                steps['step1_blurred']
+            )
         if 'step2_binary_raw' in steps:
             thresh_val = steps.get('step2_threshold_value', 'N/A')
-            label = QLabel(f"Step 2: Single Threshold Binary (before opening)\n"
-                           f"(threshold = {thresh_val}; intensity > {thresh_val} ignored)")
-            label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(label, row, 1)
-            img_label = QLabel()
-            qimg_raw = self._numpy_to_qimage(steps['step2_binary_raw'])
-            img_label.setPixmap(
-                QPixmap.fromImage(qimg_raw).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self._add_debug_image(
+                layout, views, row, 2,
+                "Step 2: Single Threshold Binary (before opening)",
+                steps['step2_binary_raw'],
+                extra=f"threshold = {thresh_val}; intensity > {thresh_val} ignored"
             )
-            layout.addWidget(img_label, row + 1, 1)
-
-        # Step 3: Single-threshold binary AFTER opening (used for detection)
-        if 'step2_binary' in steps:
-            thresh_val = steps.get('step2_threshold_value', 'N/A')
-            label = QLabel("Step 3: Single Threshold Binary After Opening (used for detection)")
-            label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(label, row, 2)
-            img_label = QLabel()
-            qimg_opened = self._numpy_to_qimage(steps['step2_binary'])
-            img_label.setPixmap(
-                QPixmap.fromImage(qimg_opened).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            )
-            layout.addWidget(img_label, row + 1, 2)
-        
         row += 2
 
-        # Step 4: Connected components before area/inertia filter
+        # Step 3: opened binary
+        if 'step2_binary' in steps:
+            self._add_debug_image(
+                layout, views, row, 0,
+                "Step 3: Single Threshold Binary After Opening (used for detection)",
+                steps['step2_binary']
+            )
+        row += 2
+
+        # Step 4 & 5
         if 'step3_before_filtering' in steps and steps['step3_before_filtering'] is not None:
             blob_count_before = detection_info.get('blobs_before_filtering', 'N/A')
-            label = QLabel(f"Step 4: Connected Components ({blob_count_before} blobs)\n(Before min area / inertia filter)")
-            label.setAlignment(Qt.AlignCenter)
-            label.setWordWrap(True)
-            layout.addWidget(label, row, 0)
-            img_label = QLabel()
-            qimg = self._numpy_to_qimage(steps['step3_before_filtering'])
-            img_label.setPixmap(QPixmap.fromImage(qimg).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            layout.addWidget(img_label, row + 1, 0)
-        
-        # Step 5: After filtering
+            self._add_debug_image(
+                layout, views, row, 0,
+                f"Step 4: Connected Components ({blob_count_before} blobs)",
+                steps['step3_before_filtering'],
+                extra="Before min area filter"
+            )
         if 'step4_after_filtering' in steps and steps['step4_after_filtering'] is not None:
-            label = QLabel(f"Step 5: Blobs After Filtering ({detection_info.get('blobs_after_filtering', 'N/A')} blobs)")
-            label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(label, row, 1)
-            img_label = QLabel()
-            qimg = self._numpy_to_qimage(steps['step4_after_filtering'])
-            img_label.setPixmap(QPixmap.fromImage(qimg).scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            layout.addWidget(img_label, row + 1, 1)
-        
+            n_after = detection_info.get('blobs_after_filtering', 'N/A')
+            self._add_debug_image(
+                layout, views, row, 1,
+                f"Step 5: Blobs After Filtering ({n_after} blobs)",
+                steps['step4_after_filtering']
+            )
+
+        if views:
+            views[0].fitInView(views[0].sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+        hint = QLabel("Zoom: mouse wheel  |  Pan: left-drag  |  Zoom to rect: right-drag, then release")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(hint, row + 2, 0, 1, 3)
+
         dialog.setLayout(layout)
         dialog.exec()
