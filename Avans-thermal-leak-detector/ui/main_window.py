@@ -1,13 +1,15 @@
 from PySide6.QtWidgets import (
     QMainWindow, QPushButton, QFileDialog,
-    QLabel, QVBoxLayout, QWidget, QScrollArea,
+    QLabel, QVBoxLayout, QWidget,
     QSlider, QCheckBox, QDialog, QHBoxLayout, QGridLayout,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QRubberBand,
+    QRubberBand, QSplitter, QScrollArea,
 )
 
 from PySide6.QtCore import Qt, QRect, QRectF
 from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter
+from pathlib import Path
+
 from core.raster import load_raster, raster_to_qimage, detect_leaks, get_intensity_stats, export_leaks_to_kml
 import numpy as np
 import cv2
@@ -72,13 +74,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Thermal Leak Detector")
 
         self.status = QLabel("No file loaded")
-        self.image_label = QLabel()
-        self.image_label.setScaledContents(True)
-        self.image_label.setAlignment(Qt.AlignCenter)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.image_label)
+        self.status.setWordWrap(True)
+        self.image_scene = QGraphicsScene()
+        self.image_pixmap_item = QGraphicsPixmapItem()
+        self.image_scene.addItem(self.image_pixmap_item)
+        self.image_view = DebugGraphicsView()
+        self.image_view.setScene(self.image_scene)
 
         # Create load button
         self.load_btn = QPushButton("Load GeoTIFF")
@@ -106,6 +107,7 @@ class MainWindow(QMainWindow):
         # Label to show threshold and detection stats
         self.threshold_info_label = QLabel("Threshold: -")
         self.threshold_info_label.setEnabled(False)
+        self.threshold_info_label.setWordWrap(True)
 
         # Create minimum size slider for leak detection
         # Controls minimum leak area as percentage of image
@@ -135,27 +137,49 @@ class MainWindow(QMainWindow):
         self.debug_checkbox.setEnabled(False)
         self.debug_checkbox.stateChanged.connect(self.update_image)
 
-        layout = QVBoxLayout()
-        layout.addWidget(self.load_btn)
-        layout.addWidget(QLabel("Sensitivity (display contrast)"))
-        layout.addWidget(self.slider)
-        layout.addWidget(QLabel("Intensity Threshold (0-255) — pixels above this are ignored"))
-        layout.addWidget(self.threshold_slider)
-        layout.addWidget(self.threshold_info_label)
-        layout.addWidget(QLabel(f"Min Size (% of image) - Range: {MIN_SIZE_PERCENT}% to {MAX_SIZE_PERCENT}%"))
-        layout.addWidget(self.size_slider)
-        layout.addWidget(self.leak_count_label)
-        layout.addWidget(self.export_kml_btn)
-        layout.addWidget(self.debug_checkbox)
-        layout.addWidget(self.status)
-        layout.addWidget(scroll)
+        # Left panel: controls (labels wrap to fit panel width)
+        left_layout = QVBoxLayout()
+        left_layout.addWidget(self.load_btn)
+        sens_label = QLabel("Sensitivity (display contrast)")
+        sens_label.setWordWrap(True)
+        left_layout.addWidget(sens_label)
+        left_layout.addWidget(self.slider)
+        thresh_label = QLabel("Intensity Threshold (0-255) — pixels above this are ignored")
+        thresh_label.setWordWrap(True)
+        left_layout.addWidget(thresh_label)
+        left_layout.addWidget(self.threshold_slider)
+        left_layout.addWidget(self.threshold_info_label)
+        size_label = QLabel(f"Min Size (% of image) - Range: {MIN_SIZE_PERCENT}% to {MAX_SIZE_PERCENT}%")
+        size_label.setWordWrap(True)
+        left_layout.addWidget(size_label)
+        left_layout.addWidget(self.size_slider)
+        left_layout.addWidget(self.leak_count_label)
+        left_layout.addWidget(self.export_kml_btn)
+        left_layout.addWidget(self.debug_checkbox)
+        left_layout.addWidget(self.status)
+        left_layout.addStretch()
+        left_panel = QWidget()
+        left_panel.setLayout(left_layout)
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left_panel)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(180)
 
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
+        # Right: image view
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(left_scroll)
+        self.splitter.addWidget(self.image_view)
+        self.splitter.setSizes([280, 720])  # Initial widths: left 280px, right gets the rest
+        self.splitter.setStretchFactor(0, 1)  # Left panel scales with window
+        self.splitter.setStretchFactor(1, 3)  # Right (image) gets more of the extra space
+
+        self.setCentralWidget(self.splitter)
 
         self.current_path = None
         self._last_leaks: list[tuple[int, int]] = []
+        self._last_image_width = 0
+        self._last_image_height = 0
 
     def load_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -198,7 +222,6 @@ class MainWindow(QMainWindow):
         self.size_slider.setEnabled(True)
         self.leak_count_label.setEnabled(True)
         self.threshold_info_label.setEnabled(True)
-        self.export_kml_btn.setEnabled(True)
         self.debug_checkbox.setEnabled(True)
         self.update_image()
 
@@ -223,6 +246,7 @@ class MainWindow(QMainWindow):
             )
 
         self._last_leaks = leaks
+        self.export_kml_btn.setEnabled(len(leaks) > 0)
 
         # Update leak count
         self.leak_count_label.setText(f"Leaks detected: {len(leaks)}")
@@ -238,10 +262,21 @@ class MainWindow(QMainWindow):
         )
         
         # Render image with leak markers (use original colors for debugging)
+        saved_sizes = self.splitter.sizes()
         qimg = raster_to_qimage(self.current_path, sensitivity, leaks=leaks, use_original_colors=True)
         pixmap = QPixmap.fromImage(qimg)
-        # Use smooth transformation for high-quality scaling when fitting to viewport
-        self.image_label.setPixmap(pixmap)
+        self.image_pixmap_item.setPixmap(pixmap)
+        self.image_pixmap_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        new_rect = self.image_pixmap_item.boundingRect()
+        size_changed = (
+            new_rect.width() != self._last_image_width or new_rect.height() != self._last_image_height
+        )
+        self._last_image_width = new_rect.width()
+        self._last_image_height = new_rect.height()
+        self.image_scene.setSceneRect(new_rect)
+        if size_changed:
+            self.image_view.fitInView(new_rect, Qt.AspectRatioMode.KeepAspectRatio)
+        self.splitter.setSizes(saved_sizes)
 
     def export_leaks_kml(self):
         """Open save dialog and export current leak centroids to a KML file."""
@@ -255,6 +290,7 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        path = str(Path(path).with_suffix(".kml"))
         try:
             export_leaks_to_kml(self.current_path, self._last_leaks, path)
             n = len(self._last_leaks)
