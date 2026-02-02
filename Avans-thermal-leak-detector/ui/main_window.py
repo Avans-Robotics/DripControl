@@ -10,8 +10,16 @@ from PySide6.QtCore import Qt, QRect, QRectF, QTimer
 from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from pathlib import Path
+import sys
 
 from core.raster import load_raster, raster_to_qimage, detect_leaks, get_intensity_stats, export_leaks_to_kml
+
+
+def _ui_dir() -> Path:
+    """Base directory for ui package (works when run from source or from PyInstaller .exe)."""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "ui"
+    return Path(__file__).resolve().parent
 import numpy as np
 import cv2
 
@@ -177,7 +185,7 @@ class MainWindow(QMainWindow):
         copyright_label.setWordWrap(True)
         copyright_label.setStyleSheet("color: #666; font-size: 20px;")
         logo_w = LOGO_WIDTH_PX
-        logos_dir = Path(__file__).parent / "logos"
+        logos_dir = _ui_dir() / "logos"
 
         # COE logo (above) – SVG: width = logo_w, height from aspect ratio
         coe_logo_path = logos_dir / "coe_vv_logo.svg"
