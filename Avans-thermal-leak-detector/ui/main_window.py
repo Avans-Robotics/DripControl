@@ -6,8 +6,9 @@ from PySide6.QtWidgets import (
     QRubberBand, QSplitter, QScrollArea,
 )
 
-from PySide6.QtCore import Qt, QRect, QRectF
+from PySide6.QtCore import Qt, QRect, QRectF, QTimer
 from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter
+from PySide6.QtSvg import QSvgRenderer
 from pathlib import Path
 
 from core.raster import load_raster, raster_to_qimage, detect_leaks, get_intensity_stats, export_leaks_to_kml
@@ -15,9 +16,12 @@ import numpy as np
 import cv2
 
 # Size slider configuration
-MAX_SIZE_PERCENT = 1.0  # Maximum size as percentage of image
+MAX_SIZE_PERCENT = 0.1  # Maximum size as percentage of image
 SIZE_STEP_PERCENT = 0.001  # Step size in percentage (0.001% increments)
 MIN_SIZE_PERCENT = SIZE_STEP_PERCENT  # Minimum size as percentage of image
+
+# Copyright logos: both use this width; height scales to keep aspect ratio
+LOGO_WIDTH_PX = 360
 
 
 class DebugGraphicsView(QGraphicsView):
@@ -158,6 +162,83 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.debug_checkbox)
         left_layout.addWidget(self.status)
         left_layout.addStretch()
+
+        # Copyright and logos at bottom
+        copyright_text = (
+            "© Alex Andrien\n"
+            "--------------------------------\n"
+            "Avans University of Applied Sciences\n"
+            "--------------------------------\n"
+            "Centre of Expertise Veiligheid en Veerkracht\n"
+            "--------------------------------\n"
+            "Lectoraat Robotisering en Sensoring"
+        )
+        copyright_label = QLabel(copyright_text)
+        copyright_label.setWordWrap(True)
+        copyright_label.setStyleSheet("color: #666; font-size: 20px;")
+        logo_w = LOGO_WIDTH_PX
+        logos_dir = Path(__file__).parent / "logos"
+
+        # COE logo (above) – SVG: width = logo_w, height from aspect ratio
+        coe_logo_path = logos_dir / "coe_vv_logo.svg"
+        coe_logo = QLabel()
+        if coe_logo_path.exists():
+            renderer = QSvgRenderer(str(coe_logo_path))
+            if renderer.isValid():
+                size = renderer.defaultSize()
+                h = int(logo_w * size.height() / size.width()) if size.width() else logo_w
+                pix = QPixmap(logo_w, h)
+                pix.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(pix)
+                renderer.render(painter, QRectF(0, 0, logo_w, h))
+                painter.end()
+                coe_logo.setPixmap(pix)
+                coe_logo.setFixedSize(logo_w, h)
+            else:
+                coe_logo.setStyleSheet("background-color: #e8e8e8; border: 1px solid #ccc;")
+                coe_logo.setFixedSize(logo_w, logo_w)
+                coe_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                coe_logo.setText("COE")
+        else:
+            coe_logo.setStyleSheet("background-color: #e8e8e8; border: 1px solid #ccc;")
+            coe_logo.setFixedSize(logo_w, logo_w)
+            coe_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            coe_logo.setText("COE")
+
+        # Interreg logo (below) – PNG: width = logo_w, height from aspect ratio
+        interreg_path = logos_dir / "Logo interreg smart farming en food processing.png"
+        interreg_logo = QLabel()
+        if interreg_path.exists():
+            pix = QPixmap(str(interreg_path))
+            if not pix.isNull():
+                h = int(logo_w * pix.height() / pix.width()) if pix.width() else logo_w
+                pix = pix.scaled(
+                    logo_w,
+                    h,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                interreg_logo.setPixmap(pix)
+                interreg_logo.setFixedSize(pix.size())
+            else:
+                interreg_logo.setStyleSheet("background-color: #e8e8e8; border: 1px solid #ccc;")
+                interreg_logo.setFixedSize(logo_w, logo_w)
+                interreg_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                interreg_logo.setText("Interreg")
+        else:
+            interreg_logo.setStyleSheet("background-color: #e8e8e8; border: 1px solid #ccc;")
+            interreg_logo.setFixedSize(logo_w, logo_w)
+            interreg_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            interreg_logo.setText("Interreg")
+
+        logos_column = QVBoxLayout()
+        logos_column.addWidget(coe_logo)
+        logos_column.addWidget(interreg_logo)
+        bottom_row = QHBoxLayout()
+        bottom_row.addWidget(copyright_label, 1)
+        bottom_row.addLayout(logos_column)
+        left_layout.addLayout(bottom_row)
+
         left_panel = QWidget()
         left_panel.setLayout(left_layout)
         left_scroll = QScrollArea()
@@ -180,6 +261,22 @@ class MainWindow(QMainWindow):
         self._last_leaks: list[tuple[int, int]] = []
         self._last_image_width = 0
         self._last_image_height = 0
+        self._initial_splitter_set = False
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._initial_splitter_set:
+            QTimer.singleShot(50, self._set_initial_splitter_sizes)
+
+    def _set_initial_splitter_sizes(self):
+        """Set left panel to at least half the window width on first show."""
+        if self._initial_splitter_set:
+            return
+        total = self.splitter.width()
+        if total > 0:
+            left = max(total // 2, self.splitter.widget(0).minimumWidth())
+            self.splitter.setSizes([left, total - left])
+            self._initial_splitter_set = True
 
     def load_file(self):
         path, _ = QFileDialog.getOpenFileName(
