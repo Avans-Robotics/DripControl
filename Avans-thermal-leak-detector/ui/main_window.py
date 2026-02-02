@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 
 from PySide6.QtCore import Qt, QRect, QRectF
 from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter
-from core.raster import load_raster, raster_to_qimage, detect_leaks, get_intensity_stats
+from core.raster import load_raster, raster_to_qimage, detect_leaks, get_intensity_stats, export_leaks_to_kml
 import numpy as np
 import cv2
 
@@ -124,6 +124,11 @@ class MainWindow(QMainWindow):
         # Leak count display
         self.leak_count_label = QLabel("Leaks detected: 0")
         self.leak_count_label.setEnabled(False)
+
+        # Export to KML
+        self.export_kml_btn = QPushButton("Export to KML")
+        self.export_kml_btn.setEnabled(False)
+        self.export_kml_btn.clicked.connect(self.export_leaks_kml)
         
         # Debug mode checkbox
         self.debug_checkbox = QCheckBox("Show detection steps")
@@ -140,6 +145,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel(f"Min Size (% of image) - Range: {MIN_SIZE_PERCENT}% to {MAX_SIZE_PERCENT}%"))
         layout.addWidget(self.size_slider)
         layout.addWidget(self.leak_count_label)
+        layout.addWidget(self.export_kml_btn)
         layout.addWidget(self.debug_checkbox)
         layout.addWidget(self.status)
         layout.addWidget(scroll)
@@ -149,6 +155,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(container)
 
         self.current_path = None
+        self._last_leaks: list[tuple[int, int]] = []
 
     def load_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -191,6 +198,7 @@ class MainWindow(QMainWindow):
         self.size_slider.setEnabled(True)
         self.leak_count_label.setEnabled(True)
         self.threshold_info_label.setEnabled(True)
+        self.export_kml_btn.setEnabled(True)
         self.debug_checkbox.setEnabled(True)
         self.update_image()
 
@@ -213,7 +221,9 @@ class MainWindow(QMainWindow):
             leaks, detection_info = detect_leaks(
                 self.current_path, rgb_threshold, min_size_percent
             )
-        
+
+        self._last_leaks = leaks
+
         # Update leak count
         self.leak_count_label.setText(f"Leaks detected: {len(leaks)}")
         
@@ -232,7 +242,26 @@ class MainWindow(QMainWindow):
         pixmap = QPixmap.fromImage(qimg)
         # Use smooth transformation for high-quality scaling when fitting to viewport
         self.image_label.setPixmap(pixmap)
-    
+
+    def export_leaks_kml(self):
+        """Open save dialog and export current leak centroids to a KML file."""
+        if not self.current_path:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export leak locations",
+            "",
+            "KML (*.kml)",
+        )
+        if not path:
+            return
+        try:
+            export_leaks_to_kml(self.current_path, self._last_leaks, path)
+            n = len(self._last_leaks)
+            self.status.setText(f"Exported {n} leak(s) to {path}")
+        except Exception as e:
+            self.status.setText(f"Export failed: {e}")
+
     def _numpy_to_qimage(self, img: np.ndarray) -> QImage:
         """Convert numpy array to QImage for display."""
         if len(img.shape) == 2:  # Grayscale

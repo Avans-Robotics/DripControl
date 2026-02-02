@@ -1,6 +1,8 @@
 import numpy as np
 import rasterio
+from rasterio import warp as rasterio_warp
 from PySide6.QtGui import QImage
+import simplekml
 from skimage.transform import resize
 from skimage import measure
 from matplotlib import cm
@@ -351,3 +353,47 @@ def raster_to_qimage(path: str, sensitivity: float, max_size=4000, leaks=None, u
         return QImage(
             colored.data, w, h, 3 * w, QImage.Format_RGB888
         ).copy()
+
+
+def export_leaks_to_kml(
+    raster_path: str,
+    centroids: list[tuple[int, int]],
+    output_path: str,
+    max_size: int = 4000,
+) -> None:
+    """
+    Export leak pixel centroids to a KML file with correct geographic coordinates.
+    Uses the raster's transform and CRS; reprojects to WGS84 (lon, lat) for KML.
+    Centroids must be in the same downsampled pixel space as detect_leaks (same max_size).
+    """
+    with rasterio.open(raster_path) as ds:
+        if ds.crs is None:
+            raise ValueError("Raster has no CRS; cannot export to geographic KML.")
+        src_crs = ds.crs
+        height, width = int(ds.height), int(ds.width)
+        scale = min(max_size / height, max_size / width, 1.0)
+
+        map_xs: list[float] = []
+        map_ys: list[float] = []
+        for col_px, row_px in centroids:
+            col_orig = col_px / scale
+            row_orig = row_px / scale
+            x, y = ds.xy(row_orig, col_orig)
+            map_xs.append(x)
+            map_ys.append(y)
+
+    if not map_xs:
+        kml = simplekml.Kml()
+        kml.save(output_path)
+        return
+
+    wgs84 = "EPSG:4326"
+    if str(src_crs).upper() == wgs84 or str(src_crs) == "4326":
+        lons, lats = map_xs, map_ys
+    else:
+        lons, lats = rasterio_warp.transform(src_crs, wgs84, map_xs, map_ys)
+
+    kml = simplekml.Kml()
+    for i, (lon, lat) in enumerate(zip(lons, lats)):
+        kml.newpoint(name=f"Leak {i + 1}", coords=[(lon, lat)])
+    kml.save(output_path)
