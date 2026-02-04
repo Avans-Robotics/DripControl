@@ -1,0 +1,2 @@
+# Install only when building the Windows .exe (e.g. pip install -r requirements-build.txt)
+pyinstaller>=6.0
