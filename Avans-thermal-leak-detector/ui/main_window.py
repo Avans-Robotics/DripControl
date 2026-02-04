@@ -505,7 +505,7 @@ class MainWindow(QMainWindow):
                 release_scene = self._viewport_to_scene(event.position().toPoint())
                 dx = release_scene.x() - self._image_press_scene.x()
                 dy = release_scene.y() - self._image_press_scene.y()
-                if math.hypot(dx, dy) < 12 and self._leaks_sorted_by_size:
+                if math.hypot(dx, dy) < 12 and self.current_path and self._last_image_width > 0 and self._last_image_height > 0:
                     px, py = release_scene.x(), release_scene.y()
                     best_i = -1
                     best_d = 1e9
@@ -515,11 +515,30 @@ class MainWindow(QMainWindow):
                             best_d = d
                             best_i = i
                     if best_i >= 0 and best_d < 30:
+                        # Click near existing leak: select it
                         self.leak_list.blockSignals(True)
                         self.leak_list.setCurrentRow(best_i)
                         self.leak_list.blockSignals(False)
                         x, y, _ = self._leaks_sorted_by_size[best_i]
                         self._selected_leak_xy = (x, y)
+                        self._refresh_display()
+                        self.image_view.setFocus(Qt.FocusReason.MouseFocusReason)
+                    else:
+                        # Click away from leaks: add new leak at this location
+                        ix = max(0, min(int(round(px)), self._last_image_width - 1))
+                        iy = max(0, min(int(round(py)), self._last_image_height - 1))
+                        self._last_leaks.append((ix, iy, 0))
+                        self._leaks_sorted_by_size = sorted(self._last_leaks, key=lambda t: t[2])
+                        self._selected_leak_xy = (ix, iy)
+                        self.leak_list.blockSignals(True)
+                        self.leak_list.clear()
+                        for idx, (lx, ly, area) in enumerate(self._leaks_sorted_by_size, 1):
+                            self.leak_list.addItem(f"{idx}. {area} px")
+                        new_row = next(i for i, (x, y, _) in enumerate(self._leaks_sorted_by_size) if (x, y) == (ix, iy))
+                        self.leak_list.setCurrentRow(new_row)
+                        self.leak_list.blockSignals(False)
+                        self.leak_count_label.setText(f"Leaks detected: {len(self._last_leaks)}")
+                        self.export_kml_btn.setEnabled(True)
                         self._refresh_display()
                         self.image_view.setFocus(Qt.FocusReason.MouseFocusReason)
             self._image_press_scene = None
