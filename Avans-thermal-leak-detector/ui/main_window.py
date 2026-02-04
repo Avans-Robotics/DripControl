@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 )
 
 from PySide6.QtCore import Qt, QRect, QRectF, QPointF, QTimer, QEvent
-from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter
+from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter, QKeyEvent
 from PySide6.QtSvg import QSvgRenderer
 from pathlib import Path
 import sys
@@ -286,13 +286,23 @@ class MainWindow(QMainWindow):
         self._initial_splitter_set = False
         self._image_press_scene: QPointF | None = None  # for map-click detection
 
-        # Install on viewport: QGraphicsView delivers mouse events to viewport(), not the view
+        # Install on viewport for mouse; on view for keyboard (view gets focus when map is clicked)
         self.image_view.viewport().installEventFilter(self)
+        self.image_view.installEventFilter(self)
+        self.leak_list.installEventFilter(self)
 
     def showEvent(self, event):
         super().showEvent(event)
         if not self._initial_splitter_set:
             QTimer.singleShot(50, self._set_initial_splitter_sizes)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        """Delete/Backspace removes selected leak regardless of which widget has focus."""
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.leak_list.currentRow() >= 0:
+            self._delete_selected_leak()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _set_initial_splitter_sizes(self):
         """Set left panel to at least half the window width on first show."""
@@ -428,6 +438,26 @@ class MainWindow(QMainWindow):
             self._selected_leak_xy = (x, y)
         self._refresh_display()
 
+    def _delete_selected_leak(self):
+        """Remove the currently selected leak from the list and update data/display."""
+        row = self.leak_list.currentRow()
+        if row < 0 or not self._leaks_sorted_by_size or row >= len(self._leaks_sorted_by_size):
+            return
+        x, y, _ = self._leaks_sorted_by_size[row]
+        # Remove this leak from _last_leaks (match by (x, y))
+        self._last_leaks = [(ax, ay, aa) for (ax, ay, aa) in self._last_leaks if (ax, ay) != (x, y)]
+        self._leaks_sorted_by_size = sorted(self._last_leaks, key=lambda t: t[2])
+        self._selected_leak_xy = None
+        self.leak_list.blockSignals(True)
+        self.leak_list.clear()
+        for idx, (lx, ly, area) in enumerate(self._leaks_sorted_by_size, 1):
+            self.leak_list.addItem(f"{idx}. {area} px")
+        self.leak_list.setCurrentRow(-1)
+        self.leak_list.blockSignals(False)
+        self.leak_count_label.setText(f"Leaks detected: {len(self._last_leaks)}")
+        self.export_kml_btn.setEnabled(len(self._last_leaks) > 0)
+        self._refresh_display()
+
     def _refresh_display(self):
         """Redraw the image with current leaks and selection highlight (no re-detection)."""
         if not self.current_path or not self._last_leaks:
@@ -446,8 +476,25 @@ class MainWindow(QMainWindow):
         return self.image_view.mapToScene(view_pos)
 
     def eventFilter(self, obj, event):
-        """Detect click on map: select nearest leak in list and highlight it."""
+        """Detect click on map: select nearest leak in list; Delete key removes selected leak."""
+        if obj is self.leak_list:
+            if event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                self._delete_selected_leak()
+                return True
+            return super().eventFilter(obj, event)
+        # View gets keyboard focus when user clicks map; viewport gets mouse events
+        if obj is self.image_view:
+            if event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                if self.leak_list.currentRow() >= 0:
+                    self._delete_selected_leak()
+                    return True
+            return super().eventFilter(obj, event)
         if obj is not self.image_view.viewport():
+            return super().eventFilter(obj, event)
+        if event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if self.leak_list.currentRow() >= 0:
+                self._delete_selected_leak()
+                return True
             return super().eventFilter(obj, event)
         if event.type() == QEvent.Type.MouseButtonPress:
             if event.button() == Qt.MouseButton.LeftButton:
@@ -474,6 +521,7 @@ class MainWindow(QMainWindow):
                         x, y, _ = self._leaks_sorted_by_size[best_i]
                         self._selected_leak_xy = (x, y)
                         self._refresh_display()
+                        self.image_view.setFocus(Qt.FocusReason.MouseFocusReason)
             self._image_press_scene = None
             return super().eventFilter(obj, event)
         return super().eventFilter(obj, event)
