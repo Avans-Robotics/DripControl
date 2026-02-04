@@ -114,7 +114,7 @@ def _single_threshold_detection(
     """
     Detect dark blobs using a single intensity threshold.
     Pixels with intensity > threshold are ignored (background).
-    Returns (centroids list, components_before for debug,
+    Returns (list of (x, y, area_px), components_before for debug,
              raw binary image, opened binary image, detection_info dict).
     """
     h, w = intensity_uint8.shape
@@ -140,14 +140,14 @@ def _single_threshold_detection(
         intensity_at_point = float(intensity_scaled[y_int, x_int]) if 0 <= y_int < h and 0 <= x_int < w else 0.0
         components_before.append((area, intensity_at_point, (x_int, y_int)))
         if not apply_filters:
-            components_after.append((intensity_at_point, (x_int, y_int)))
+            components_after.append((area, intensity_at_point, (x_int, y_int)))
             continue
         if area < min_area_px or area > max_area_px:
             continue
-        components_after.append((intensity_at_point, (x_int, y_int)))
+        components_after.append((area, intensity_at_point, (x_int, y_int)))
 
-    components_after.sort(key=lambda t: t[0])
-    centroids_sorted = [xy for _, xy in components_after]
+    components_after.sort(key=lambda t: t[1])  # sort by intensity (darkest first)
+    centroids_sorted = [(xy[0], xy[1], area) for area, _, xy in components_after]
     detection_info = {
         'threshold': thresh_val,
         'min_area_px': min_area_px,
@@ -183,9 +183,9 @@ def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, max_s
         return_steps: If True, return (centroids, detection_info, steps_dict) for visualization.
 
     Returns:
-        If return_steps is False: (list of (x, y) centroids, detection_info dict).
-        If return_steps is True: (centroids, detection_info, steps_dict with intermediate images).
-        Centroids sorted darkest first.
+        If return_steps is False: (list of (x, y, area_px) per leak, detection_info dict).
+        If return_steps is True: (same list, detection_info, steps_dict with intermediate images).
+        List is sorted by intensity (darkest first). Use area_px for size-based sorting in the UI.
     """
     intensity, valid_mask = _load_intensity(path, max_size=max_size)
     if not np.any(valid_mask):
@@ -235,7 +235,7 @@ def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, max_s
         cv2.circle(img_before, (x, y), min(radius, 50), (0, 255, 0), 1)
     steps['step3_before_filtering'] = img_before
     img_after = cv2.cvtColor(intensity_uint8, cv2.COLOR_GRAY2BGR)
-    for x, y in centroids:
+    for x, y, _ in centroids:
         cv2.circle(img_after, (x, y), 5, (0, 0, 255), 2)
     steps['step4_after_filtering'] = img_after
 

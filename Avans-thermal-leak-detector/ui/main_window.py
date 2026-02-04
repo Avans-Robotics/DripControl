@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QLabel, QVBoxLayout, QWidget,
     QSlider, QCheckBox, QDialog, QHBoxLayout, QGridLayout,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QRubberBand, QSplitter, QScrollArea,
+    QRubberBand, QSplitter, QScrollArea, QListWidget,
 )
 
 from PySide6.QtCore import Qt, QRect, QRectF, QTimer
@@ -139,6 +139,14 @@ class MainWindow(QMainWindow):
         self.leak_count_label = QLabel("Leaks detected: 0")
         self.leak_count_label.setEnabled(False)
 
+        # Scrollable list of detected leaks (sorted by size, small → large)
+        self.leak_list_label = QLabel("Leaks (by size, small → large)")
+        self.leak_list_label.setEnabled(False)
+        self.leak_list = QListWidget()
+        self.leak_list.setEnabled(False)
+        self.leak_list.setMinimumHeight(120)
+        self.leak_list.setAlternatingRowColors(True)
+
         # Export to KML
         self.export_kml_btn = QPushButton("Export to KML")
         self.export_kml_btn.setEnabled(False)
@@ -166,6 +174,8 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(size_label)
         left_layout.addWidget(self.size_slider)
         left_layout.addWidget(self.leak_count_label)
+        left_layout.addWidget(self.leak_list_label)
+        left_layout.addWidget(self.leak_list)
         left_layout.addWidget(self.export_kml_btn)
         left_layout.addWidget(self.debug_checkbox)
         left_layout.addWidget(self.status)
@@ -266,7 +276,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.splitter)
 
         self.current_path = None
-        self._last_leaks: list[tuple[int, int]] = []
+        self._last_leaks: list[tuple[int, int, int]] = []  # (x, y, area_px)
         self._last_image_width = 0
         self._last_image_height = 0
         self._initial_splitter_set = False
@@ -326,6 +336,8 @@ class MainWindow(QMainWindow):
         self.threshold_slider.setEnabled(True)
         self.size_slider.setEnabled(True)
         self.leak_count_label.setEnabled(True)
+        self.leak_list_label.setEnabled(True)
+        self.leak_list.setEnabled(True)
         self.threshold_info_label.setEnabled(True)
         self.debug_checkbox.setEnabled(True)
         self.update_image()
@@ -355,6 +367,12 @@ class MainWindow(QMainWindow):
 
         # Update leak count
         self.leak_count_label.setText(f"Leaks detected: {len(leaks)}")
+
+        # Update leak list: sort by area (small to large), show as "1. 123 px", etc.
+        self.leak_list.clear()
+        sorted_by_size = sorted(leaks, key=lambda t: t[2])
+        for idx, (x, y, area) in enumerate(sorted_by_size, 1):
+            self.leak_list.addItem(f"{idx}. {area} px")
         
         # Update threshold info display (single threshold)
         thresh = detection_info.get('threshold', detection_info.get('max_threshold', 'N/A'))
@@ -368,7 +386,8 @@ class MainWindow(QMainWindow):
         
         # Render image with leak markers (use original colors for debugging)
         saved_sizes = self.splitter.sizes()
-        qimg = raster_to_qimage(self.current_path, sensitivity, leaks=leaks, use_original_colors=True)
+        centroids_xy = [(x, y) for x, y, _ in leaks]
+        qimg = raster_to_qimage(self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=True)
         pixmap = QPixmap.fromImage(qimg)
         self.image_pixmap_item.setPixmap(pixmap)
         self.image_pixmap_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
@@ -397,7 +416,8 @@ class MainWindow(QMainWindow):
             return
         path = str(Path(path).with_suffix(".kml"))
         try:
-            export_leaks_to_kml(self.current_path, self._last_leaks, path)
+            centroids_xy = [(x, y) for x, y, _ in self._last_leaks]
+            export_leaks_to_kml(self.current_path, centroids_xy, path)
             n = len(self._last_leaks)
             self.status.setText(f"Exported {n} leak(s) to {path}")
         except Exception as e:
