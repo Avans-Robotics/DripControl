@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QRubberBand, QSplitter, QScrollArea, QListWidget,
 )
 
-from PySide6.QtCore import Qt, QRect, QRectF, QTimer
+from PySide6.QtCore import Qt, QRect, QRectF, QPointF, QTimer, QEvent
 from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from pathlib import Path
@@ -20,6 +20,7 @@ def _ui_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS) / "ui"
     return Path(__file__).resolve().parent
+import math
 import numpy as np
 import cv2
 
@@ -146,6 +147,7 @@ class MainWindow(QMainWindow):
         self.leak_list.setEnabled(False)
         self.leak_list.setMinimumHeight(120)
         self.leak_list.setAlternatingRowColors(True)
+        self.leak_list.currentRowChanged.connect(self._on_leak_list_selection_changed)
 
         # Export to KML
         self.export_kml_btn = QPushButton("Export to KML")
@@ -277,9 +279,15 @@ class MainWindow(QMainWindow):
 
         self.current_path = None
         self._last_leaks: list[tuple[int, int, int]] = []  # (x, y, area_px)
+        self._leaks_sorted_by_size: list[tuple[int, int, int]] = []  # same, sorted small→large (list index = row)
+        self._selected_leak_xy: tuple[int, int] | None = None
         self._last_image_width = 0
         self._last_image_height = 0
         self._initial_splitter_set = False
+        self._image_press_scene: QPointF | None = None  # for map-click detection
+
+        # Install on viewport: QGraphicsView delivers mouse events to viewport(), not the view
+        self.image_view.viewport().installEventFilter(self)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -363,15 +371,21 @@ class MainWindow(QMainWindow):
             )
 
         self._last_leaks = leaks
+        self._leaks_sorted_by_size = sorted(leaks, key=lambda t: t[2])
         self.export_kml_btn.setEnabled(len(leaks) > 0)
+
+        # Clear list selection when detection changes (avoid stale highlight)
+        self._selected_leak_xy = None
+        self.leak_list.blockSignals(True)
+        self.leak_list.setCurrentRow(-1)
+        self.leak_list.blockSignals(False)
 
         # Update leak count
         self.leak_count_label.setText(f"Leaks detected: {len(leaks)}")
 
         # Update leak list: sort by area (small to large), show as "1. 123 px", etc.
         self.leak_list.clear()
-        sorted_by_size = sorted(leaks, key=lambda t: t[2])
-        for idx, (x, y, area) in enumerate(sorted_by_size, 1):
+        for idx, (x, y, area) in enumerate(self._leaks_sorted_by_size, 1):
             self.leak_list.addItem(f"{idx}. {area} px")
         
         # Update threshold info display (single threshold)
@@ -387,7 +401,10 @@ class MainWindow(QMainWindow):
         # Render image with leak markers (use original colors for debugging)
         saved_sizes = self.splitter.sizes()
         centroids_xy = [(x, y) for x, y, _ in leaks]
-        qimg = raster_to_qimage(self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=True)
+        qimg = raster_to_qimage(
+            self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=True,
+            highlight_xy=self._selected_leak_xy,
+        )
         pixmap = QPixmap.fromImage(qimg)
         self.image_pixmap_item.setPixmap(pixmap)
         self.image_pixmap_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
@@ -401,6 +418,65 @@ class MainWindow(QMainWindow):
         if size_changed:
             self.image_view.fitInView(new_rect, Qt.AspectRatioMode.KeepAspectRatio)
         self.splitter.setSizes(saved_sizes)
+
+    def _on_leak_list_selection_changed(self, row: int):
+        """When user selects a leak in the list, highlight that leak on the map."""
+        if not self._leaks_sorted_by_size or row < 0 or row >= len(self._leaks_sorted_by_size):
+            self._selected_leak_xy = None
+        else:
+            x, y, _ = self._leaks_sorted_by_size[row]
+            self._selected_leak_xy = (x, y)
+        self._refresh_display()
+
+    def _refresh_display(self):
+        """Redraw the image with current leaks and selection highlight (no re-detection)."""
+        if not self.current_path or not self._last_leaks:
+            return
+        sensitivity = self.slider.value()
+        centroids_xy = [(x, y) for x, y, _ in self._last_leaks]
+        qimg = raster_to_qimage(
+            self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=True,
+            highlight_xy=self._selected_leak_xy,
+        )
+        self.image_pixmap_item.setPixmap(QPixmap.fromImage(qimg))
+
+    def _viewport_to_scene(self, viewport_pos) -> QPointF:
+        """Convert viewport coordinates to scene coordinates."""
+        view_pos = self.image_view.viewport().mapTo(self.image_view, viewport_pos)
+        return self.image_view.mapToScene(view_pos)
+
+    def eventFilter(self, obj, event):
+        """Detect click on map: select nearest leak in list and highlight it."""
+        if obj is not self.image_view.viewport():
+            return super().eventFilter(obj, event)
+        if event.type() == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._image_press_scene = self._viewport_to_scene(event.position().toPoint())
+            return super().eventFilter(obj, event)
+        if event.type() == QEvent.Type.MouseButtonRelease:
+            if event.button() == Qt.MouseButton.LeftButton and self._image_press_scene is not None:
+                release_scene = self._viewport_to_scene(event.position().toPoint())
+                dx = release_scene.x() - self._image_press_scene.x()
+                dy = release_scene.y() - self._image_press_scene.y()
+                if math.hypot(dx, dy) < 12 and self._leaks_sorted_by_size:
+                    px, py = release_scene.x(), release_scene.y()
+                    best_i = -1
+                    best_d = 1e9
+                    for i, (x, y, _) in enumerate(self._leaks_sorted_by_size):
+                        d = math.hypot(px - x, py - y)
+                        if d < best_d:
+                            best_d = d
+                            best_i = i
+                    if best_i >= 0 and best_d < 30:
+                        self.leak_list.blockSignals(True)
+                        self.leak_list.setCurrentRow(best_i)
+                        self.leak_list.blockSignals(False)
+                        x, y, _ = self._leaks_sorted_by_size[best_i]
+                        self._selected_leak_xy = (x, y)
+                        self._refresh_display()
+            self._image_press_scene = None
+            return super().eventFilter(obj, event)
+        return super().eventFilter(obj, event)
 
     def export_leaks_kml(self):
         """Open save dialog and export current leak centroids to a KML file."""

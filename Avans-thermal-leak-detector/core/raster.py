@@ -1,3 +1,4 @@
+from typing import Optional
 import numpy as np
 import rasterio
 from rasterio import warp as rasterio_warp
@@ -241,7 +242,8 @@ def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, max_s
 
     return centroids, detection_info, steps
 
-def raster_to_qimage(path: str, sensitivity: float, max_size=4000, leaks=None, use_original_colors=False) -> QImage:
+def raster_to_qimage(path: str, sensitivity: float, max_size=4000, leaks=None, use_original_colors=False,
+                     highlight_xy: Optional[tuple[int, int]] = None) -> QImage:
     with rasterio.open(path) as ds:
         rgb = ds.read([1, 2, 3]).astype(np.float32)
         intensity = rgb.mean(axis=0)
@@ -313,18 +315,29 @@ def raster_to_qimage(path: str, sensitivity: float, max_size=4000, leaks=None, u
             for idx, (x, y) in enumerate(leaks, 1):
                 # Ensure coordinates are within bounds
                 if 0 <= y < h and 0 <= x < w:
+                    is_highlight = highlight_xy is not None and (x, y) == highlight_xy
+                    if is_highlight:
+                        # Highlighted leak: gold/yellow circle, thicker outline
+                        fill_color = (255, 215, 0)  # gold
+                        outline_color = (0, 0, 0)
+                        outline_width = 3
+                        outer_offset = 3
+                    else:
+                        fill_color = (255, 0, 0)  # red
+                        outline_color = (255, 255, 255)
+                        outline_width = 1
+                        outer_offset = 2
                     # Draw white circle (background)
                     draw.ellipse(
-                        [x - marker_radius - 2, y - marker_radius - 2,
-                         x + marker_radius + 2, y + marker_radius + 2],
+                        [x - marker_radius - outer_offset, y - marker_radius - outer_offset,
+                         x + marker_radius + outer_offset, y + marker_radius + outer_offset],
                         fill=(255, 255, 255), outline=(0, 0, 0), width=2
                     )
-                    
-                    # Draw red circle
+                    # Draw filled circle (red or gold)
                     draw.ellipse(
                         [x - marker_radius, y - marker_radius,
                          x + marker_radius, y + marker_radius],
-                        fill=(255, 0, 0), outline=(255, 255, 255), width=1
+                        fill=fill_color, outline=outline_color, width=outline_width
                     )
                     
                     # Draw number text
