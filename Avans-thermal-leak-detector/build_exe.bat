@@ -12,7 +12,7 @@ pyinstaller --noconfirm thermal_leak_detector.spec
 
 if %ERRORLEVEL% equ 0 (
     echo.
-    echo Build complete. Run: dist\Thermal Leak Detector\Thermal Leak Detector.exe
+    echo Build complete. Run: dist\Thermal Leak Detector.exe
 ) else (
     echo Build failed.
     exit /b 1
