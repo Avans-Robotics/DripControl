@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QLabel, QVBoxLayout, QWidget,
     QSlider, QCheckBox, QDialog, QHBoxLayout, QGridLayout,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QRubberBand, QSplitter, QScrollArea, QListWidget,
+    QRubberBand, QSplitter, QScrollArea, QTableWidget, QTableWidgetItem,
 )
 
 from PySide6.QtCore import Qt, QRect, QRectF, QPointF, QTimer, QEvent
@@ -140,14 +140,19 @@ class MainWindow(QMainWindow):
         self.leak_count_label = QLabel("Leaks detected: 0")
         self.leak_count_label.setEnabled(False)
 
-        # Scrollable list of detected leaks (sorted by size, small → large)
+        # Table of detected leaks (sorted by size, small → large); columns: Leak (index + size), Source (Auto/User)
         self.leak_list_label = QLabel("Leaks (by size, small → large)")
         self.leak_list_label.setEnabled(False)
-        self.leak_list = QListWidget()
+        self.leak_list = QTableWidget()
+        self.leak_list.setColumnCount(2)
+        self.leak_list.setHorizontalHeaderLabels(["Leak", "Source"])
         self.leak_list.setEnabled(False)
         self.leak_list.setMinimumHeight(120)
         self.leak_list.setAlternatingRowColors(True)
-        self.leak_list.currentRowChanged.connect(self._on_leak_list_selection_changed)
+        self.leak_list.horizontalHeader().setStretchLastSection(False)
+        self.leak_list.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.leak_list.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.leak_list.currentCellChanged.connect(self._on_leak_list_selection_changed)
 
         # Export to KML
         self.export_kml_btn = QPushButton("Export to KML")
@@ -280,6 +285,7 @@ class MainWindow(QMainWindow):
         self.current_path = None
         self._last_leaks: list[tuple[int, int, int]] = []  # (x, y, area_px)
         self._leaks_sorted_by_size: list[tuple[int, int, int]] = []  # same, sorted small→large (list index = row)
+        self._user_added_leaks: set[tuple[int, int]] = set()  # (x, y) of leaks added by user via map click
         self._selected_leak_xy: tuple[int, int] | None = None
         self._last_image_width = 0
         self._last_image_height = 0
@@ -382,21 +388,20 @@ class MainWindow(QMainWindow):
 
         self._last_leaks = leaks
         self._leaks_sorted_by_size = sorted(leaks, key=lambda t: t[2])
+        self._user_added_leaks = set()  # detection run: all leaks are automatic
         self.export_kml_btn.setEnabled(len(leaks) > 0)
 
         # Clear list selection when detection changes (avoid stale highlight)
         self._selected_leak_xy = None
         self.leak_list.blockSignals(True)
-        self.leak_list.setCurrentRow(-1)
+        self.leak_list.setCurrentCell(-1, -1)
         self.leak_list.blockSignals(False)
 
         # Update leak count
         self.leak_count_label.setText(f"Leaks detected: {len(leaks)}")
 
-        # Update leak list: sort by area (small to large), show as "1. 123 px", etc.
-        self.leak_list.clear()
-        for idx, (x, y, area) in enumerate(self._leaks_sorted_by_size, 1):
-            self.leak_list.addItem(f"{idx}. {area} px")
+        # Update leak table: sort by area (small to large), columns Leak and Source
+        self._repopulate_leak_table()
         
         # Update threshold info display (single threshold)
         thresh = detection_info.get('threshold', detection_info.get('max_threshold', 'N/A'))
@@ -429,8 +434,17 @@ class MainWindow(QMainWindow):
             self.image_view.fitInView(new_rect, Qt.AspectRatioMode.KeepAspectRatio)
         self.splitter.setSizes(saved_sizes)
 
-    def _on_leak_list_selection_changed(self, row: int):
-        """When user selects a leak in the list, highlight that leak on the map."""
+    def _repopulate_leak_table(self):
+        """Fill the leak table from _leaks_sorted_by_size and _user_added_leaks."""
+        n = len(self._leaks_sorted_by_size)
+        self.leak_list.setRowCount(n)
+        for row, (x, y, area) in enumerate(self._leaks_sorted_by_size):
+            source = "User" if (x, y) in self._user_added_leaks else "Auto"
+            self.leak_list.setItem(row, 0, QTableWidgetItem(f"{area} px"))
+            self.leak_list.setItem(row, 1, QTableWidgetItem(source))
+
+    def _on_leak_list_selection_changed(self, row: int, col: int, _prev_row: int, _prev_col: int):
+        """When user selects a leak in the table, highlight that leak on the map."""
         if not self._leaks_sorted_by_size or row < 0 or row >= len(self._leaks_sorted_by_size):
             self._selected_leak_xy = None
         else:
@@ -444,15 +458,14 @@ class MainWindow(QMainWindow):
         if row < 0 or not self._leaks_sorted_by_size or row >= len(self._leaks_sorted_by_size):
             return
         x, y, _ = self._leaks_sorted_by_size[row]
+        self._user_added_leaks.discard((x, y))
         # Remove this leak from _last_leaks (match by (x, y))
         self._last_leaks = [(ax, ay, aa) for (ax, ay, aa) in self._last_leaks if (ax, ay) != (x, y)]
         self._leaks_sorted_by_size = sorted(self._last_leaks, key=lambda t: t[2])
         self._selected_leak_xy = None
         self.leak_list.blockSignals(True)
-        self.leak_list.clear()
-        for idx, (lx, ly, area) in enumerate(self._leaks_sorted_by_size, 1):
-            self.leak_list.addItem(f"{idx}. {area} px")
-        self.leak_list.setCurrentRow(-1)
+        self._repopulate_leak_table()
+        self.leak_list.setCurrentCell(-1, -1)
         self.leak_list.blockSignals(False)
         self.leak_count_label.setText(f"Leaks detected: {len(self._last_leaks)}")
         self.export_kml_btn.setEnabled(len(self._last_leaks) > 0)
@@ -517,7 +530,8 @@ class MainWindow(QMainWindow):
                     if best_i >= 0 and best_d < 30:
                         # Click near existing leak: select it
                         self.leak_list.blockSignals(True)
-                        self.leak_list.setCurrentRow(best_i)
+                        self.leak_list.setCurrentCell(best_i, 0)
+                        self.leak_list.selectRow(best_i)
                         self.leak_list.blockSignals(False)
                         x, y, _ = self._leaks_sorted_by_size[best_i]
                         self._selected_leak_xy = (x, y)
@@ -528,14 +542,14 @@ class MainWindow(QMainWindow):
                         ix = max(0, min(int(round(px)), self._last_image_width - 1))
                         iy = max(0, min(int(round(py)), self._last_image_height - 1))
                         self._last_leaks.append((ix, iy, 0))
+                        self._user_added_leaks.add((ix, iy))
                         self._leaks_sorted_by_size = sorted(self._last_leaks, key=lambda t: t[2])
                         self._selected_leak_xy = (ix, iy)
                         self.leak_list.blockSignals(True)
-                        self.leak_list.clear()
-                        for idx, (lx, ly, area) in enumerate(self._leaks_sorted_by_size, 1):
-                            self.leak_list.addItem(f"{idx}. {area} px")
+                        self._repopulate_leak_table()
                         new_row = next(i for i, (x, y, _) in enumerate(self._leaks_sorted_by_size) if (x, y) == (ix, iy))
-                        self.leak_list.setCurrentRow(new_row)
+                        self.leak_list.setCurrentCell(new_row, 0)
+                        self.leak_list.selectRow(new_row)
                         self.leak_list.blockSignals(False)
                         self.leak_count_label.setText(f"Leaks detected: {len(self._last_leaks)}")
                         self.export_kml_btn.setEnabled(True)
