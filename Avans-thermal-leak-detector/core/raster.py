@@ -243,7 +243,8 @@ def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, max_s
     return centroids, detection_info, steps
 
 def raster_to_qimage(path: str, sensitivity: float, max_size=4000, leaks=None, use_original_colors=False,
-                     highlight_xy: Optional[tuple[int, int]] = None) -> QImage:
+                     highlight_xy: Optional[tuple[int, int]] = None,
+                     user_added_xy: Optional[set[tuple[int, int]]] = None) -> QImage:
     with rasterio.open(path) as ds:
         rgb = ds.read([1, 2, 3]).astype(np.float32)
         intensity = rgb.mean(axis=0)
@@ -322,8 +323,14 @@ def raster_to_qimage(path: str, sensitivity: float, max_size=4000, leaks=None, u
                         outline_color = (0, 0, 0)
                         outline_width = 3
                         outer_offset = 3
+                    elif user_added_xy is not None and (x, y) in user_added_xy:
+                        # User-added leak: blue
+                        fill_color = (0, 100, 255)  # blue
+                        outline_color = (255, 255, 255)
+                        outline_width = 1
+                        outer_offset = 2
                     else:
-                        fill_color = (255, 0, 0)  # red
+                        fill_color = (255, 0, 0)  # red (auto-detected)
                         outline_color = (255, 255, 255)
                         outline_width = 1
                         outer_offset = 2

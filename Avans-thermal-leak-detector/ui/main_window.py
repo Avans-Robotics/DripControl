@@ -370,6 +370,10 @@ class MainWindow(QMainWindow):
         if not self.current_path:
             return
 
+        # Preserve user-added leaks across new detection runs
+        prev_user_coords = set(self._user_added_leaks)
+        prev_last_leaks = list(self._last_leaks)
+
         sensitivity = self.slider.value()
         rgb_threshold = self.threshold_slider.value() / 10.0  # Convert to float (0.0-255.0)
         # Convert slider value to percentage using the configured step size
@@ -386,10 +390,21 @@ class MainWindow(QMainWindow):
                 self.current_path, rgb_threshold, min_size_percent
             )
 
-        self._last_leaks = leaks
-        self._leaks_sorted_by_size = sorted(leaks, key=lambda t: t[2])
-        self._user_added_leaks = set()  # detection run: all leaks are automatic
-        self.export_kml_btn.setEnabled(len(leaks) > 0)
+        # Merge new automatic leaks with existing user-added leaks
+        user_leaks = [
+            (x, y, area)
+            for (x, y, area) in prev_last_leaks
+            if (x, y) in prev_user_coords
+        ]
+        auto_leaks = [
+            (x, y, area)
+            for (x, y, area) in leaks
+            if (x, y) not in prev_user_coords
+        ]
+        self._last_leaks = user_leaks + auto_leaks
+        self._leaks_sorted_by_size = sorted(self._last_leaks, key=lambda t: t[2])
+        # Keep _user_added_leaks as-is so user leaks survive slider changes
+        self.export_kml_btn.setEnabled(len(self._last_leaks) > 0)
 
         # Clear list selection when detection changes (avoid stale highlight)
         self._selected_leak_xy = None
@@ -397,8 +412,8 @@ class MainWindow(QMainWindow):
         self.leak_list.setCurrentCell(-1, -1)
         self.leak_list.blockSignals(False)
 
-        # Update leak count
-        self.leak_count_label.setText(f"Leaks detected: {len(leaks)}")
+        # Update leak count (automatic + user-added)
+        self.leak_count_label.setText(f"Leaks detected: {len(self._last_leaks)}")
 
         # Update leak table: sort by area (small to large), columns Leak and Source
         self._repopulate_leak_table()
@@ -406,7 +421,7 @@ class MainWindow(QMainWindow):
         # Update threshold info display (single threshold)
         thresh = detection_info.get('threshold', detection_info.get('max_threshold', 'N/A'))
         before_count = detection_info.get('blobs_before_filtering', 'N/A')
-        after_count = detection_info.get('blobs_after_filtering', len(leaks))
+        after_count = detection_info.get('blobs_after_filtering', detection_info.get('blobs_after_filtering', 'N/A'))
         self.threshold_info_label.setText(
             f"Threshold: {thresh} (intensity > {thresh} ignored) | "
             f"Min area: {detection_info['min_area_px']} px | "
@@ -415,10 +430,10 @@ class MainWindow(QMainWindow):
         
         # Render image with leak markers (use original colors for debugging)
         saved_sizes = self.splitter.sizes()
-        centroids_xy = [(x, y) for x, y, _ in leaks]
+        centroids_xy = [(x, y) for x, y, _ in self._last_leaks]
         qimg = raster_to_qimage(
             self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=True,
-            highlight_xy=self._selected_leak_xy,
+            highlight_xy=self._selected_leak_xy, user_added_xy=self._user_added_leaks,
         )
         pixmap = QPixmap.fromImage(qimg)
         self.image_pixmap_item.setPixmap(pixmap)
@@ -479,7 +494,7 @@ class MainWindow(QMainWindow):
         centroids_xy = [(x, y) for x, y, _ in self._last_leaks]
         qimg = raster_to_qimage(
             self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=True,
-            highlight_xy=self._selected_leak_xy,
+            highlight_xy=self._selected_leak_xy, user_added_xy=self._user_added_leaks,
         )
         self.image_pixmap_item.setPixmap(QPixmap.fromImage(qimg))
 
