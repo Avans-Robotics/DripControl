@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (
     QSlider, QCheckBox, QDialog, QHBoxLayout, QGridLayout,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QRubberBand, QSplitter, QScrollArea, QTableWidget, QTableWidgetItem,
+    QGroupBox, QMessageBox,
 )
 
 from PySide6.QtCore import Qt, QRect, QRectF, QPointF, QTimer, QEvent
@@ -20,6 +21,11 @@ def _ui_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS) / "ui"
     return Path(__file__).resolve().parent
+
+
+def _is_development() -> bool:
+    """True when run as python app.py; False when run as built executable (e.g. PyInstaller)."""
+    return not getattr(sys, "frozen", False)
 import math
 import numpy as np
 import cv2
@@ -86,8 +92,15 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Thermal Leak Detector")
 
-        self.status = QLabel("No file loaded")
+        self.status = QLabel("")
         self.status.setWordWrap(True)
+        # File info: container for structured rows (text + "?" with tooltip when loaded)
+        self.file_info_container = QWidget()
+        self.file_info_layout = QVBoxLayout(self.file_info_container)
+        self.file_info_layout.setContentsMargins(0, 0, 0, 0)
+        self._file_info_placeholder = QLabel("No file loaded")
+        self._file_info_placeholder.setWordWrap(True)
+        self.file_info_layout.addWidget(self._file_info_placeholder)
         self.image_scene = QGraphicsScene()
         self.image_pixmap_item = QGraphicsPixmapItem()
         self.image_scene.addItem(self.image_pixmap_item)
@@ -177,37 +190,67 @@ class MainWindow(QMainWindow):
         self.debug_checkbox.setEnabled(False)
         self.debug_checkbox.stateChanged.connect(self.update_image)
 
-        # Left panel: controls (labels wrap to fit panel width)
+        # Left panel: controls in logical groups
         left_layout = QVBoxLayout()
+
+        # --- File group: load, export, file info ---
+        file_group = QGroupBox("File")
+        file_layout = QVBoxLayout()
         top_buttons = QHBoxLayout()
         top_buttons.addWidget(self.load_btn)
         top_buttons.addWidget(self.export_kml_btn)
         top_buttons.addStretch()
-        left_layout.addLayout(top_buttons)
+        file_layout.addLayout(top_buttons)
+        file_layout.addWidget(self.file_info_container)
+        file_layout.addWidget(self.status)
+        file_group.setLayout(file_layout)
+        left_layout.addWidget(file_group)
+
+        # --- View group: Original/Thermal toggle; sensitivity only visible in thermal mode ---
+        view_group = QGroupBox("View")
+        view_layout = QVBoxLayout()
         view_row = QHBoxLayout()
         view_row.addWidget(QLabel("Original"))
         view_row.addWidget(self.view_toggle)
         view_row.addWidget(QLabel("Thermal"))
+        self.sens_label = QLabel("Sensitivity")
+        self.sens_label.setWordWrap(True)
+        view_row.addWidget(self.sens_label)
+        view_row.addWidget(self.slider)
         view_row.addStretch()
-        left_layout.addLayout(view_row)
-        sens_label = QLabel("Sensitivity (thermal contrast)")
-        sens_label.setWordWrap(True)
-        left_layout.addWidget(sens_label)
-        left_layout.addWidget(self.slider)
-        thresh_label = QLabel("Intensity Threshold (0-255) — pixels above this are ignored")
-        thresh_label.setWordWrap(True)
-        left_layout.addWidget(thresh_label)
-        left_layout.addWidget(self.threshold_slider)
-        left_layout.addWidget(self.threshold_info_label)
-        size_label = QLabel(f"Min Size (% of image) - Range: {MIN_SIZE_PERCENT}% to {MAX_SIZE_PERCENT}%")
-        size_label.setWordWrap(True)
-        left_layout.addWidget(size_label)
-        left_layout.addWidget(self.size_slider)
-        left_layout.addWidget(self.leak_count_label)
-        left_layout.addWidget(self.leak_list_label)
-        left_layout.addWidget(self.leak_list)
-        left_layout.addWidget(self.debug_checkbox)
-        left_layout.addWidget(self.status)
+        view_layout.addLayout(view_row)
+        view_group.setLayout(view_layout)
+        left_layout.addWidget(view_group)
+        # Sensitivity only visible when Thermal is selected
+        self._update_sensitivity_visibility()
+
+        # --- Leak detection settings: thresholds, debug ---
+        leak_settings_group = QGroupBox("Leak detection settings")
+        leak_settings_layout = QVBoxLayout()
+        self.thresh_label = QLabel("Intensity threshold (0–255): pixels above — are ignored")
+        self.thresh_label.setWordWrap(True)
+        leak_settings_layout.addWidget(self.thresh_label)
+        leak_settings_layout.addWidget(self.threshold_slider)
+        if _is_development():
+            leak_settings_layout.addWidget(self.threshold_info_label)
+        self.size_label = QLabel("Min size of leak (— — —): — pixels")
+        self.size_label.setWordWrap(True)
+        leak_settings_layout.addWidget(self.size_label)
+        leak_settings_layout.addWidget(self.size_slider)
+        if _is_development():
+            leak_settings_layout.addWidget(self.debug_checkbox)
+        leak_settings_group.setLayout(leak_settings_layout)
+        left_layout.addWidget(leak_settings_group)
+
+        # --- Leak detection results: count and table ---
+        leak_results_group = QGroupBox("Leak detection results")
+        leak_results_layout = QVBoxLayout()
+        leak_results_layout.addWidget(self.leak_count_label)
+        leak_results_layout.addWidget(self.leak_list_label)
+        leak_results_layout.addWidget(self.leak_list)
+        leak_results_group.setLayout(leak_results_layout)
+        left_layout.addWidget(leak_results_group)
+
         left_layout.addStretch()
 
         # Copyright and logos at bottom
@@ -365,10 +408,51 @@ class MainWindow(QMainWindow):
             % groove_bg
         )
 
+    def _update_sensitivity_visibility(self):
+        """Show sensitivity slider and label only when Thermal view is selected."""
+        visible = self.view_toggle.value() == 1
+        self.sens_label.setVisible(visible)
+        self.slider.setVisible(visible)
+
     def _on_view_toggle(self, value: int):
-        """Toggle switch: update groove color and redraw."""
+        """Toggle switch: update groove color, sensitivity visibility, and redraw."""
         self._apply_view_toggle_style()
+        self._update_sensitivity_visibility()
         self.update_image()
+
+    def _update_file_info(self, info: list[dict]):
+        """Build file info from load_raster() result: each row has text and optional '?' with tooltip."""
+        # Clear current content
+        while self.file_info_layout.count():
+            item = self.file_info_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        # Build rows
+        for row in info:
+            text = row["text"]
+            tooltip = row.get("tooltip")
+            text_label = QLabel(text)
+            text_label.setWordWrap(True)
+            if tooltip is None:
+                self.file_info_layout.addWidget(text_label)
+            else:
+                row_layout = QHBoxLayout()
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.addWidget(text_label, 1)
+                help_btn = QPushButton("?")
+                help_btn.setToolTip(tooltip)
+                help_btn.setFlat(True)
+                help_btn.setFixedSize(22, 22)
+                help_btn.setStyleSheet(
+                    "QPushButton { color: #666; font-size: 12px; font-weight: bold; border: none; background: transparent; }"
+                    "QPushButton:hover { color: #333; background: #eee; border-radius: 11px; }"
+                )
+                help_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                help_btn.clicked.connect(
+                    (lambda t: lambda: QMessageBox.information(self, "Explanation", t))(tooltip)
+                )
+                row_layout.addWidget(help_btn, 0)
+                self.file_info_layout.addLayout(row_layout)
 
     def _set_initial_splitter_sizes(self):
         """Set left panel to at least half the window width on first show."""
@@ -393,7 +477,8 @@ class MainWindow(QMainWindow):
 
         self.current_path = path
         info = load_raster(path)
-        self.status.setText(info)
+        self._update_file_info(info)
+        self.status.setText("")
 
         # Set robust defaults from image statistics so the first render is useful.
         # We pick a "dark" percentile as the initial threshold so leaks appear immediately.
@@ -423,8 +508,9 @@ class MainWindow(QMainWindow):
         self.leak_count_label.setEnabled(True)
         self.leak_list_label.setEnabled(True)
         self.leak_list.setEnabled(True)
-        self.threshold_info_label.setEnabled(True)
-        self.debug_checkbox.setEnabled(True)
+        if _is_development():
+            self.threshold_info_label.setEnabled(True)
+            self.debug_checkbox.setEnabled(True)
         self.update_image()
 
     def update_image(self):
@@ -437,11 +523,12 @@ class MainWindow(QMainWindow):
 
         sensitivity = self.slider.value()
         rgb_threshold = self.threshold_slider.value() / 10.0  # Convert to float (0.0-255.0)
+        self.thresh_label.setText(f"Intensity threshold (0–255): pixels above {rgb_threshold} are ignored")
         # Convert slider value to percentage using the configured step size
         min_size_percent = self.size_slider.value() * SIZE_STEP_PERCENT
-        
-        # Detect leaks (with or without debug steps)
-        if self.debug_checkbox.isChecked():
+
+        # Detect leaks (with or without debug steps; debug only in development)
+        if _is_development() and self.debug_checkbox.isChecked():
             leaks, detection_info, steps = detect_leaks(
                 self.current_path, rgb_threshold, min_size_percent, return_steps=True
             )
@@ -479,19 +566,17 @@ class MainWindow(QMainWindow):
         # Update leak table: sort by area (small to large), columns Leak and Source
         self._repopulate_leak_table()
         
-        # Update threshold info display (single threshold)
-        thresh = detection_info.get('threshold', detection_info.get('max_threshold', 'N/A'))
-        before_count = detection_info.get('blobs_before_filtering', 'N/A')
-        after_count = detection_info.get('blobs_after_filtering', detection_info.get('blobs_after_filtering', 'N/A'))
-        self.threshold_info_label.setText(
-            f"Threshold: {thresh} (intensity > {thresh} ignored) | "
-            f"Min area: {detection_info['min_area_px']} px | "
-            f"Blobs: {before_count} → {after_count} (after filtering)"
-        )
-        
-        # Render image with leak markers (use original colors for debugging)
+        # Update threshold info display (development only)
+        if _is_development():
+            before_count = detection_info.get('blobs_before_filtering', 'N/A')
+            after_count = detection_info.get('blobs_after_filtering', detection_info.get('blobs_after_filtering', 'N/A'))
+            self.threshold_info_label.setText(
+                f"Blobs: {before_count} → {after_count} (after filtering)"
+            )
+
+        # Render image with leak markers (same order as table: by size, so map numbers match table rows)
         saved_sizes = self.splitter.sizes()
-        centroids_xy = [(x, y) for x, y, _ in self._last_leaks]
+        centroids_xy = [(x, y) for x, y, _ in self._leaks_sorted_by_size]
         use_original = self.view_toggle.value() == 0
         qimg = raster_to_qimage(
             self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=use_original,
@@ -506,6 +591,16 @@ class MainWindow(QMainWindow):
         )
         self._last_image_width = new_rect.width()
         self._last_image_height = new_rect.height()
+        # Update size label now we have dimensions (min/max/current in pixels)
+        total_px = self._last_image_width * self._last_image_height
+        if total_px > 0:
+            slider_max = int((MAX_SIZE_PERCENT - MIN_SIZE_PERCENT) / SIZE_STEP_PERCENT)
+            a_px = max(1, int((0 * SIZE_STEP_PERCENT / 100.0) * total_px))
+            b_px = max(1, int((slider_max * SIZE_STEP_PERCENT / 100.0) * total_px))
+            x_px = max(1, int((self.size_slider.value() * SIZE_STEP_PERCENT / 100.0) * total_px))
+            self.size_label.setText(f"Min size of leak ({a_px} - {b_px}): {x_px} pixels.")
+        else:
+            self.size_label.setText("Min size of leak (— — —): — pixels")
         self.image_scene.setSceneRect(new_rect)
         if size_changed:
             self.image_view.fitInView(new_rect, Qt.AspectRatioMode.KeepAspectRatio)
@@ -553,7 +648,7 @@ class MainWindow(QMainWindow):
         if not self.current_path or not self._last_leaks:
             return
         sensitivity = self.slider.value()
-        centroids_xy = [(x, y) for x, y, _ in self._last_leaks]
+        centroids_xy = [(x, y) for x, y, _ in self._leaks_sorted_by_size]
         use_original = self.view_toggle.value() == 0
         qimg = raster_to_qimage(
             self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=use_original,

@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Optional
 import numpy as np
 import rasterio
@@ -10,7 +11,7 @@ from matplotlib import cm
 from PIL import Image, ImageDraw, ImageFont
 import cv2
 
-def load_raster(path: str) -> str:
+def load_raster(path: str) -> list[dict]:
     with rasterio.open(path) as ds:
         if ds.count < 3:
             raise ValueError("Raster must have at least 3 bands (RGB)")
@@ -18,13 +19,22 @@ def load_raster(path: str) -> str:
         rgb = ds.read([1, 2, 3]).astype(np.float32)
         intensity = rgb.mean(axis=0)
 
-        return (
-            f"Loaded file:\n{path}\n\n"
-            f"Size: {ds.width} x {ds.height}\n"
-            f"CRS: {ds.crs}\n"
-            f"Intensity min/max: "
-            f"{intensity.min():.2f} / {intensity.max():.2f}"
-        )
+        crs_str = str(ds.crs) if ds.crs else "None (no geographic reference)"
+        return [
+            {"text": f"File:\n{Path(path).name}", "tooltip": None},
+            {
+                "text": f"Size (pixels): {ds.width} x {ds.height}",
+                "tooltip": "Width and height of the raster in pixel units.",
+            },
+            {
+                "text": f"CRS (Coordinate Reference System): {crs_str}",
+                "tooltip": "Defines how pixel coordinates map to the Earth (e.g. WGS84, UTM). Used for correct KML export.",
+            },
+            {
+                "text": f"Intensity (mean of RGB bands): Min {intensity.min():.2f}  Max {intensity.max():.2f}",
+                "tooltip": "Values are in the raster's native units; detection uses a 0-255 scale.",
+            },
+        ]
 
 def _load_intensity(path: str, max_size=4000):
     with rasterio.open(path) as ds:
