@@ -94,11 +94,24 @@ class MainWindow(QMainWindow):
         self.image_view = DebugGraphicsView()
         self.image_view.setScene(self.image_scene)
 
-        # Create load button
+        # Create load and export buttons (small, side by side at top)
         self.load_btn = QPushButton("Load GeoTIFF")
         self.load_btn.clicked.connect(self.load_file)
+        self.load_btn.setMaximumWidth(140)
 
-        # Create sensitivity slider
+        # Toggle switch: Original vs Thermal view (sensitivity applies only in thermal mode)
+        self.view_toggle = QSlider(Qt.Orientation.Horizontal)
+        self.view_toggle.setMinimum(0)
+        self.view_toggle.setMaximum(1)
+        self.view_toggle.setValue(0)
+        self.view_toggle.setPageStep(1)
+        self.view_toggle.setSingleStep(1)
+        self.view_toggle.setFixedSize(52, 28)
+        self.view_toggle.setEnabled(False)
+        self.view_toggle.valueChanged.connect(self._on_view_toggle)
+        self._apply_view_toggle_style()
+
+        # Create sensitivity slider (contrast for thermal colormap)
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setMinimum(1)
         self.slider.setMaximum(20)
@@ -154,10 +167,10 @@ class MainWindow(QMainWindow):
         self.leak_list.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.leak_list.currentCellChanged.connect(self._on_leak_list_selection_changed)
 
-        # Export to KML
         self.export_kml_btn = QPushButton("Export to KML")
         self.export_kml_btn.setEnabled(False)
         self.export_kml_btn.clicked.connect(self.export_leaks_kml)
+        self.export_kml_btn.setMaximumWidth(140)
         
         # Debug mode checkbox
         self.debug_checkbox = QCheckBox("Show detection steps")
@@ -166,8 +179,18 @@ class MainWindow(QMainWindow):
 
         # Left panel: controls (labels wrap to fit panel width)
         left_layout = QVBoxLayout()
-        left_layout.addWidget(self.load_btn)
-        sens_label = QLabel("Sensitivity (display contrast)")
+        top_buttons = QHBoxLayout()
+        top_buttons.addWidget(self.load_btn)
+        top_buttons.addWidget(self.export_kml_btn)
+        top_buttons.addStretch()
+        left_layout.addLayout(top_buttons)
+        view_row = QHBoxLayout()
+        view_row.addWidget(QLabel("Original"))
+        view_row.addWidget(self.view_toggle)
+        view_row.addWidget(QLabel("Thermal"))
+        view_row.addStretch()
+        left_layout.addLayout(view_row)
+        sens_label = QLabel("Sensitivity (thermal contrast)")
         sens_label.setWordWrap(True)
         left_layout.addWidget(sens_label)
         left_layout.addWidget(self.slider)
@@ -183,7 +206,6 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.leak_count_label)
         left_layout.addWidget(self.leak_list_label)
         left_layout.addWidget(self.leak_list)
-        left_layout.addWidget(self.export_kml_btn)
         left_layout.addWidget(self.debug_checkbox)
         left_layout.addWidget(self.status)
         left_layout.addStretch()
@@ -310,6 +332,44 @@ class MainWindow(QMainWindow):
             return
         super().keyPressEvent(event)
 
+    def _apply_view_toggle_style(self):
+        """Style the view toggle as a pill switch (light blue track, white thumb)."""
+        is_thermal = self.view_toggle.value() == 1
+        groove_bg = "#b0c4de" if is_thermal else "#c0c0c0"
+        self.view_toggle.setStyleSheet(
+            """
+            QSlider::groove:horizontal {
+                height: 20px;
+                background: %s;
+                border: 1px solid #87a7c9;
+                border-radius: 10px;
+            }
+            QSlider::handle:horizontal {
+                width: 18px;
+                height: 18px;
+                margin: 1px 1px 1px 1px;
+                background: white;
+                border: 1px solid #ccc;
+                border-radius: 9px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #f8f8f8;
+            }
+            QSlider::sub-page:horizontal {
+                background: transparent;
+            }
+            QSlider::add-page:horizontal {
+                background: transparent;
+            }
+            """
+            % groove_bg
+        )
+
+    def _on_view_toggle(self, value: int):
+        """Toggle switch: update groove color and redraw."""
+        self._apply_view_toggle_style()
+        self.update_image()
+
     def _set_initial_splitter_sizes(self):
         """Set left panel to at least half the window width on first show."""
         if self._initial_splitter_set:
@@ -357,6 +417,7 @@ class MainWindow(QMainWindow):
             self.size_slider.blockSignals(False)
 
         self.slider.setEnabled(True)
+        self.view_toggle.setEnabled(True)
         self.threshold_slider.setEnabled(True)
         self.size_slider.setEnabled(True)
         self.leak_count_label.setEnabled(True)
@@ -431,8 +492,9 @@ class MainWindow(QMainWindow):
         # Render image with leak markers (use original colors for debugging)
         saved_sizes = self.splitter.sizes()
         centroids_xy = [(x, y) for x, y, _ in self._last_leaks]
+        use_original = self.view_toggle.value() == 0
         qimg = raster_to_qimage(
-            self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=True,
+            self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=use_original,
             highlight_xy=self._selected_leak_xy, user_added_xy=self._user_added_leaks,
         )
         pixmap = QPixmap.fromImage(qimg)
@@ -492,8 +554,9 @@ class MainWindow(QMainWindow):
             return
         sensitivity = self.slider.value()
         centroids_xy = [(x, y) for x, y, _ in self._last_leaks]
+        use_original = self.view_toggle.value() == 0
         qimg = raster_to_qimage(
-            self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=True,
+            self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=use_original,
             highlight_xy=self._selected_leak_xy, user_added_xy=self._user_added_leaks,
         )
         self.image_pixmap_item.setPixmap(QPixmap.fromImage(qimg))
