@@ -174,6 +174,7 @@ class MainWindow(QMainWindow):
         self.leak_list.setHorizontalHeaderLabels(["Leak", "Source"])
         self.leak_list.setEnabled(False)
         self.leak_list.setMinimumHeight(120)
+        self.leak_list.setMaximumWidth(240)
         self.leak_list.setAlternatingRowColors(True)
         self.leak_list.horizontalHeader().setStretchLastSection(False)
         self.leak_list.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
