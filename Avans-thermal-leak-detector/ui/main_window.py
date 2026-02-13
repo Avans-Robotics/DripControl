@@ -181,6 +181,11 @@ class MainWindow(QMainWindow):
         self.leak_list.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.leak_list.currentCellChanged.connect(self._on_leak_list_selection_changed)
 
+        self.clear_user_leaks_btn = QPushButton("Clear user-defined leaks")
+        self.clear_user_leaks_btn.setEnabled(False)
+        self.clear_user_leaks_btn.clicked.connect(self._clear_user_leaks)
+        self.clear_user_leaks_btn.setMaximumWidth(200)
+
         self.export_kml_btn = QPushButton("Export to KML")
         self.export_kml_btn.setEnabled(False)
         self.export_kml_btn.clicked.connect(self.export_leaks_kml)
@@ -214,11 +219,11 @@ class MainWindow(QMainWindow):
         view_row.addWidget(QLabel("Original"))
         view_row.addWidget(self.view_toggle)
         view_row.addWidget(QLabel("Thermal"))
-        self.sens_label = QLabel("Sensitivity")
+        view_row.addStretch()
+        self.sens_label = QLabel("Color Gradient")
         self.sens_label.setWordWrap(True)
         view_row.addWidget(self.sens_label)
         view_row.addWidget(self.slider)
-        view_row.addStretch()
         view_layout.addLayout(view_row)
         view_group.setLayout(view_layout)
         left_layout.addWidget(view_group)
@@ -249,6 +254,7 @@ class MainWindow(QMainWindow):
         leak_results_layout.addWidget(self.leak_count_label)
         leak_results_layout.addWidget(self.leak_list_label)
         leak_results_layout.addWidget(self.leak_list)
+        leak_results_layout.addWidget(self.clear_user_leaks_btn)
         leak_results_group.setLayout(leak_results_layout)
         left_layout.addWidget(leak_results_group)
 
@@ -554,6 +560,7 @@ class MainWindow(QMainWindow):
         self._leaks_sorted_by_size = sorted(self._last_leaks, key=lambda t: t[2])
         # Keep _user_added_leaks as-is so user leaks survive slider changes
         self.export_kml_btn.setEnabled(len(self._last_leaks) > 0)
+        self._update_clear_user_leaks_button()
 
         # Clear list selection when detection changes (avoid stale highlight)
         self._selected_leak_xy = None
@@ -642,7 +649,29 @@ class MainWindow(QMainWindow):
         self.leak_list.blockSignals(False)
         self.leak_count_label.setText(f"Leaks detected: {len(self._last_leaks)}")
         self.export_kml_btn.setEnabled(len(self._last_leaks) > 0)
+        self._update_clear_user_leaks_button()
         self._refresh_display()
+
+    def _clear_user_leaks(self):
+        """Remove all user-defined leaks; keep only auto-detected leaks."""
+        if not self._user_added_leaks:
+            return
+        self._last_leaks = [(x, y, a) for (x, y, a) in self._last_leaks if (x, y) not in self._user_added_leaks]
+        self._user_added_leaks.clear()
+        self._leaks_sorted_by_size = sorted(self._last_leaks, key=lambda t: t[2])
+        self._selected_leak_xy = None
+        self.leak_list.blockSignals(True)
+        self._repopulate_leak_table()
+        self.leak_list.setCurrentCell(-1, -1)
+        self.leak_list.blockSignals(False)
+        self.leak_count_label.setText(f"Leaks detected: {len(self._last_leaks)}")
+        self.export_kml_btn.setEnabled(len(self._last_leaks) > 0)
+        self._update_clear_user_leaks_button()
+        self._refresh_display()
+
+    def _update_clear_user_leaks_button(self):
+        """Enable 'Clear user-defined leaks' only when there are user-added leaks."""
+        self.clear_user_leaks_btn.setEnabled(len(self._user_added_leaks) > 0)
 
     def _refresh_display(self):
         """Redraw the image with current leaks and selection highlight (no re-detection)."""
@@ -727,6 +756,7 @@ class MainWindow(QMainWindow):
                         self.leak_list.blockSignals(False)
                         self.leak_count_label.setText(f"Leaks detected: {len(self._last_leaks)}")
                         self.export_kml_btn.setEnabled(True)
+                        self._update_clear_user_leaks_button()
                         self._refresh_display()
                         self.image_view.setFocus(Qt.FocusReason.MouseFocusReason)
             self._image_press_scene = None
