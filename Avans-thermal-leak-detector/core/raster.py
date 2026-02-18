@@ -1,3 +1,5 @@
+from pathlib import Path
+from typing import Optional
 import numpy as np
 import rasterio
 from rasterio import warp as rasterio_warp
@@ -9,7 +11,7 @@ from matplotlib import cm
 from PIL import Image, ImageDraw, ImageFont
 import cv2
 
-def load_raster(path: str) -> str:
+def load_raster(path: str) -> list[dict]:
     with rasterio.open(path) as ds:
         if ds.count < 3:
             raise ValueError("Raster must have at least 3 bands (RGB)")
@@ -17,13 +19,22 @@ def load_raster(path: str) -> str:
         rgb = ds.read([1, 2, 3]).astype(np.float32)
         intensity = rgb.mean(axis=0)
 
-        return (
-            f"Loaded file:\n{path}\n\n"
-            f"Size: {ds.width} x {ds.height}\n"
-            f"CRS: {ds.crs}\n"
-            f"Intensity min/max: "
-            f"{intensity.min():.2f} / {intensity.max():.2f}"
-        )
+        crs_str = str(ds.crs) if ds.crs else "None (no geographic reference)"
+        return [
+            {"text": f"File:\n{Path(path).name}", "tooltip": None},
+            {
+                "text": f"Size (pixels): {ds.width} x {ds.height}",
+                "tooltip": "Width and height of the raster in pixel units.",
+            },
+            {
+                "text": f"CRS (Coordinate Reference System): {crs_str}",
+                "tooltip": "Defines how pixel coordinates map to the Earth (e.g. WGS84, UTM). Used for correct KML export.",
+            },
+            {
+                "text": f"Intensity (mean of RGB bands): Min {intensity.min():.2f}  Max {intensity.max():.2f}",
+                "tooltip": "Values are in the raster's native units; detection uses a 0-255 scale.",
+            },
+        ]
 
 def _load_intensity(path: str, max_size=4000):
     with rasterio.open(path) as ds:
@@ -114,7 +125,7 @@ def _single_threshold_detection(
     """
     Detect dark blobs using a single intensity threshold.
     Pixels with intensity > threshold are ignored (background).
-    Returns (centroids list, components_before for debug,
+    Returns (list of (x, y, area_px), components_before for debug,
              raw binary image, opened binary image, detection_info dict).
     """
     h, w = intensity_uint8.shape
@@ -140,14 +151,14 @@ def _single_threshold_detection(
         intensity_at_point = float(intensity_scaled[y_int, x_int]) if 0 <= y_int < h and 0 <= x_int < w else 0.0
         components_before.append((area, intensity_at_point, (x_int, y_int)))
         if not apply_filters:
-            components_after.append((intensity_at_point, (x_int, y_int)))
+            components_after.append((area, intensity_at_point, (x_int, y_int)))
             continue
         if area < min_area_px or area > max_area_px:
             continue
-        components_after.append((intensity_at_point, (x_int, y_int)))
+        components_after.append((area, intensity_at_point, (x_int, y_int)))
 
-    components_after.sort(key=lambda t: t[0])
-    centroids_sorted = [xy for _, xy in components_after]
+    components_after.sort(key=lambda t: t[1])  # sort by intensity (darkest first)
+    centroids_sorted = [(xy[0], xy[1], area) for area, _, xy in components_after]
     detection_info = {
         'threshold': thresh_val,
         'min_area_px': min_area_px,
@@ -183,9 +194,9 @@ def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, max_s
         return_steps: If True, return (centroids, detection_info, steps_dict) for visualization.
 
     Returns:
-        If return_steps is False: (list of (x, y) centroids, detection_info dict).
-        If return_steps is True: (centroids, detection_info, steps_dict with intermediate images).
-        Centroids sorted darkest first.
+        If return_steps is False: (list of (x, y, area_px) per leak, detection_info dict).
+        If return_steps is True: (same list, detection_info, steps_dict with intermediate images).
+        List is sorted by intensity (darkest first). Use area_px for size-based sorting in the UI.
     """
     intensity, valid_mask = _load_intensity(path, max_size=max_size)
     if not np.any(valid_mask):
@@ -235,13 +246,15 @@ def detect_leaks(path: str, rgb_threshold: float, min_size_percent: float, max_s
         cv2.circle(img_before, (x, y), min(radius, 50), (0, 255, 0), 1)
     steps['step3_before_filtering'] = img_before
     img_after = cv2.cvtColor(intensity_uint8, cv2.COLOR_GRAY2BGR)
-    for x, y in centroids:
+    for x, y, _ in centroids:
         cv2.circle(img_after, (x, y), 5, (0, 0, 255), 2)
     steps['step4_after_filtering'] = img_after
 
     return centroids, detection_info, steps
 
-def raster_to_qimage(path: str, sensitivity: float, max_size=4000, leaks=None, use_original_colors=False) -> QImage:
+def raster_to_qimage(path: str, sensitivity: float, max_size=4000, leaks=None, use_original_colors=False,
+                     highlight_xy: Optional[tuple[int, int]] = None,
+                     user_added_xy: Optional[set[tuple[int, int]]] = None) -> QImage:
     with rasterio.open(path) as ds:
         rgb = ds.read([1, 2, 3]).astype(np.float32)
         intensity = rgb.mean(axis=0)
@@ -313,18 +326,35 @@ def raster_to_qimage(path: str, sensitivity: float, max_size=4000, leaks=None, u
             for idx, (x, y) in enumerate(leaks, 1):
                 # Ensure coordinates are within bounds
                 if 0 <= y < h and 0 <= x < w:
+                    is_highlight = highlight_xy is not None and (x, y) == highlight_xy
+                    if is_highlight:
+                        # Highlighted leak: gold/yellow circle, thicker outline
+                        fill_color = (255, 215, 0)  # gold
+                        outline_color = (0, 0, 0)
+                        outline_width = 3
+                        outer_offset = 3
+                    elif user_added_xy is not None and (x, y) in user_added_xy:
+                        # User-added leak: blue
+                        fill_color = (0, 100, 255)  # blue
+                        outline_color = (255, 255, 255)
+                        outline_width = 1
+                        outer_offset = 2
+                    else:
+                        fill_color = (255, 0, 0)  # red (auto-detected)
+                        outline_color = (255, 255, 255)
+                        outline_width = 1
+                        outer_offset = 2
                     # Draw white circle (background)
                     draw.ellipse(
-                        [x - marker_radius - 2, y - marker_radius - 2,
-                         x + marker_radius + 2, y + marker_radius + 2],
+                        [x - marker_radius - outer_offset, y - marker_radius - outer_offset,
+                         x + marker_radius + outer_offset, y + marker_radius + outer_offset],
                         fill=(255, 255, 255), outline=(0, 0, 0), width=2
                     )
-                    
-                    # Draw red circle
+                    # Draw filled circle (red or gold)
                     draw.ellipse(
                         [x - marker_radius, y - marker_radius,
                          x + marker_radius, y + marker_radius],
-                        fill=(255, 0, 0), outline=(255, 255, 255), width=1
+                        fill=fill_color, outline=outline_color, width=outline_width
                     )
                     
                     # Draw number text

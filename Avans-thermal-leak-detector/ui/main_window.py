@@ -3,11 +3,12 @@ from PySide6.QtWidgets import (
     QLabel, QVBoxLayout, QWidget,
     QSlider, QCheckBox, QDialog, QHBoxLayout, QGridLayout,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QRubberBand, QSplitter, QScrollArea,
+    QRubberBand, QSplitter, QScrollArea, QTableWidget, QTableWidgetItem,
+    QGroupBox, QMessageBox,
 )
 
-from PySide6.QtCore import Qt, QRect, QRectF, QTimer
-from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter
+from PySide6.QtCore import Qt, QRect, QRectF, QPoint, QPointF, QTimer, QEvent
+from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter, QKeyEvent
 from PySide6.QtSvg import QSvgRenderer
 from pathlib import Path
 import sys
@@ -20,6 +21,12 @@ def _ui_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS) / "ui"
     return Path(__file__).resolve().parent
+
+
+def _is_development() -> bool:
+    """True when run as python app.py; False when run as built executable (e.g. PyInstaller)."""
+    return not getattr(sys, "frozen", False)
+import math
 import numpy as np
 import cv2
 
@@ -85,19 +92,39 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Thermal Leak Detector")
 
-        self.status = QLabel("No file loaded")
+        self.status = QLabel("")
         self.status.setWordWrap(True)
+        # File info: container for structured rows (text + "?" with tooltip when loaded)
+        self.file_info_container = QWidget()
+        self.file_info_layout = QVBoxLayout(self.file_info_container)
+        self.file_info_layout.setContentsMargins(0, 0, 0, 0)
+        self._file_info_placeholder = QLabel("No file loaded")
+        self._file_info_placeholder.setWordWrap(True)
+        self.file_info_layout.addWidget(self._file_info_placeholder)
         self.image_scene = QGraphicsScene()
         self.image_pixmap_item = QGraphicsPixmapItem()
         self.image_scene.addItem(self.image_pixmap_item)
         self.image_view = DebugGraphicsView()
         self.image_view.setScene(self.image_scene)
 
-        # Create load button
+        # Create load and export buttons (small, side by side at top)
         self.load_btn = QPushButton("Load GeoTIFF")
         self.load_btn.clicked.connect(self.load_file)
+        self.load_btn.setMaximumWidth(140)
 
-        # Create sensitivity slider
+        # Toggle switch: Original vs Thermal view (sensitivity applies only in thermal mode)
+        self.view_toggle = QSlider(Qt.Orientation.Horizontal)
+        self.view_toggle.setMinimum(0)
+        self.view_toggle.setMaximum(1)
+        self.view_toggle.setValue(0)
+        self.view_toggle.setPageStep(1)
+        self.view_toggle.setSingleStep(1)
+        self.view_toggle.setFixedSize(52, 28)
+        self.view_toggle.setEnabled(False)
+        self.view_toggle.valueChanged.connect(self._on_view_toggle)
+        self._apply_view_toggle_style()
+
+        # Create sensitivity slider (contrast for thermal colormap)
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setMinimum(1)
         self.slider.setMaximum(20)
@@ -139,36 +166,148 @@ class MainWindow(QMainWindow):
         self.leak_count_label = QLabel("Leaks detected: 0")
         self.leak_count_label.setEnabled(False)
 
-        # Export to KML
+        # Table of detected leaks (sorted by size, small → large); columns: Leak (index + size), Source (Auto/User)
+        self.leak_list = QTableWidget()
+        self.leak_list.setColumnCount(2)
+        self.leak_list.setHorizontalHeaderLabels(["Leak", "Source"])
+        self.leak_list.setEnabled(False)
+        self.leak_list.setMinimumHeight(120)
+        self.leak_list.setMaximumWidth(240)
+        self.leak_list.setAlternatingRowColors(True)
+        self.leak_list.horizontalHeader().setStretchLastSection(False)
+        self.leak_list.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.leak_list.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.leak_list.currentCellChanged.connect(self._on_leak_list_selection_changed)
+
+        self.clear_user_leaks_btn = QPushButton("Clear user-defined leaks")
+        self.clear_user_leaks_btn.setEnabled(False)
+        self.clear_user_leaks_btn.clicked.connect(self._clear_user_leaks)
+        self.clear_user_leaks_btn.setMaximumWidth(200)
+
         self.export_kml_btn = QPushButton("Export to KML")
         self.export_kml_btn.setEnabled(False)
         self.export_kml_btn.clicked.connect(self.export_leaks_kml)
+        self.export_kml_btn.setMaximumWidth(140)
         
         # Debug mode checkbox
         self.debug_checkbox = QCheckBox("Show detection steps")
         self.debug_checkbox.setEnabled(False)
         self.debug_checkbox.stateChanged.connect(self.update_image)
 
-        # Left panel: controls (labels wrap to fit panel width)
+        # Left panel: controls in logical groups
         left_layout = QVBoxLayout()
-        left_layout.addWidget(self.load_btn)
-        sens_label = QLabel("Sensitivity (display contrast)")
-        sens_label.setWordWrap(True)
-        left_layout.addWidget(sens_label)
-        left_layout.addWidget(self.slider)
-        thresh_label = QLabel("Intensity Threshold (0-255) — pixels above this are ignored")
-        thresh_label.setWordWrap(True)
-        left_layout.addWidget(thresh_label)
-        left_layout.addWidget(self.threshold_slider)
-        left_layout.addWidget(self.threshold_info_label)
-        size_label = QLabel(f"Min Size (% of image) - Range: {MIN_SIZE_PERCENT}% to {MAX_SIZE_PERCENT}%")
-        size_label.setWordWrap(True)
-        left_layout.addWidget(size_label)
-        left_layout.addWidget(self.size_slider)
-        left_layout.addWidget(self.leak_count_label)
-        left_layout.addWidget(self.export_kml_btn)
-        left_layout.addWidget(self.debug_checkbox)
-        left_layout.addWidget(self.status)
+
+        # --- General help for first-time users ---
+        how_to_use_btn = QPushButton("How to use")
+        how_to_use_btn.setMaximumWidth(120)
+        def _show_how_to_use():
+            msg = QMessageBox(self)
+            msg.setWindowTitle("How to use")
+            msg.setTextFormat(Qt.TextFormat.RichText)
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setText(
+                "1. <b>Load GeoTIFF:</b> Open a thermal GeoTIFF image using the \"Load GeoTIFF\" button.<br><br>"
+                "2. <b>View leaks and adjust:</b> Leaks are detected automatically. Use the \"Leak detection settings\" "
+                "sliders (intensity threshold and min size) to refine which regions count as leaks. Switch to "
+                "Thermal view and adjust the Color Gradient to see temperature contrast.<br><br>"
+                "3. <b>Add or remove leaks:</b> Click on the map to add a leak at that location. Select a leak in the "
+                "list and press Delete to remove it. Use \"Clear user-defined leaks\" to remove only leaks you added.<br><br>"
+                "4. <b>Export to KML:</b> When satisfied, use \"Export to KML\" to save leak locations for use in "
+                "GIS or mapping tools (e.g. Google Earth)."
+            )
+            msg.exec()
+        how_to_use_btn.clicked.connect(_show_how_to_use)
+        left_layout.addWidget(how_to_use_btn)
+
+        # --- File group: load, export, file info ---
+        file_group = QGroupBox("File")
+        file_layout = QVBoxLayout()
+        top_buttons = QHBoxLayout()
+        top_buttons.addWidget(self.load_btn)
+        top_buttons.addWidget(self.export_kml_btn)
+        top_buttons.addStretch()
+        top_buttons.addWidget(self._make_help_button(
+            "Load GeoTIFF: open a thermal GeoTIFF image. Export to KML: save the current leak "
+            "locations to a KML file for use in GIS or mapping applications (e.g. Google Earth)."
+        ))
+        file_layout.addLayout(top_buttons)
+        file_layout.addWidget(self.file_info_container)
+        file_layout.addWidget(self.status)
+        file_group.setLayout(file_layout)
+        left_layout.addWidget(file_group)
+
+        # --- View group: Original/Thermal toggle; sensitivity only visible in thermal mode ---
+        view_group = QGroupBox("View")
+        view_layout = QVBoxLayout()
+        view_row = QHBoxLayout()
+        view_row.addWidget(QLabel("Original"))
+        view_row.addWidget(self.view_toggle)
+        view_row.addWidget(QLabel("Thermal"))
+        view_row.addStretch()
+        self.sens_label = QLabel("Color Gradient")
+        self.sens_label.setWordWrap(True)
+        view_row.addWidget(self.sens_label)
+        view_row.addWidget(self.slider)
+        view_row.addWidget(self._make_help_button(
+            "Original: show the image as captured. Thermal: apply a color gradient to highlight "
+            "temperature (darker = cooler). The Color Gradient slider (in Thermal mode) adjusts "
+            "the contrast of the colormap so leaks stand out better."
+        ))
+        view_layout.addLayout(view_row)
+        view_group.setLayout(view_layout)
+        left_layout.addWidget(view_group)
+        # Sensitivity only visible when Thermal is selected
+        self._update_sensitivity_visibility()
+
+        # --- Leak detection settings: thresholds, debug ---
+        leak_settings_group = QGroupBox("Leak detection settings")
+        leak_settings_layout = QVBoxLayout()
+        thresh_row = QHBoxLayout()
+        thresh_row.setContentsMargins(0, 0, 0, 0)
+        self.thresh_label = QLabel("Intensity threshold (0–255): pixels above — are ignored")
+        self.thresh_label.setWordWrap(True)
+        thresh_row.addWidget(self.thresh_label, 1)
+        thresh_row.addWidget(self._make_help_button(
+            "Pixels with intensity above this value are ignored; only darker (colder) pixels are "
+            "considered as possible leaks. Lower = stricter (fewer leaks); higher = more candidates."
+        ))
+        leak_settings_layout.addLayout(thresh_row)
+        leak_settings_layout.addWidget(self.threshold_slider)
+        if _is_development():
+            leak_settings_layout.addWidget(self.threshold_info_label)
+        size_row = QHBoxLayout()
+        size_row.setContentsMargins(0, 0, 0, 0)
+        self.size_label = QLabel("Min size of leak (— — —): — pixels")
+        self.size_label.setWordWrap(True)
+        size_row.addWidget(self.size_label, 1)
+        size_row.addWidget(self._make_help_button(
+            "Minimum area (in pixels) for a region to count as a leak. Increase to filter out small "
+            "spots; decrease to catch smaller leaks."
+        ))
+        leak_settings_layout.addLayout(size_row)
+        leak_settings_layout.addWidget(self.size_slider)
+        if _is_development():
+            leak_settings_layout.addWidget(self.debug_checkbox)
+        leak_settings_group.setLayout(leak_settings_layout)
+        left_layout.addWidget(leak_settings_group)
+
+        # --- Leak detection results: count and table ---
+        leak_results_group = QGroupBox("Leak detection results")
+        leak_results_layout = QVBoxLayout()
+        leak_count_row = QHBoxLayout()
+        leak_count_row.setContentsMargins(0, 0, 0, 0)
+        leak_count_row.addWidget(self.leak_count_label, 0)
+        leak_count_row.addWidget(self._make_help_button(
+            "List of detected leaks, sorted by size (small to large). Click a row to highlight the "
+            "leak on the map. Click on the map to add a leak at that location; select a leak and "
+            "press Delete to remove it. 'Clear user-defined leaks' removes only leaks you added manually."
+        ), 0)
+        leak_results_layout.addLayout(leak_count_row)
+        leak_results_layout.addWidget(self.leak_list)
+        leak_results_layout.addWidget(self.clear_user_leaks_btn)
+        leak_results_group.setLayout(leak_results_layout)
+        left_layout.addWidget(leak_results_group)
+
         left_layout.addStretch()
 
         # Copyright and logos at bottom
@@ -266,15 +405,128 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.splitter)
 
         self.current_path = None
-        self._last_leaks: list[tuple[int, int]] = []
+        self._last_leaks: list[tuple[int, int, int]] = []  # (x, y, area_px)
+        self._leaks_sorted_by_size: list[tuple[int, int, int]] = []  # same, sorted small→large (list index = row)
+        self._user_added_leaks: set[tuple[int, int]] = set()  # (x, y) of leaks added by user via map click
+        self._selected_leak_xy: tuple[int, int] | None = None
         self._last_image_width = 0
         self._last_image_height = 0
         self._initial_splitter_set = False
+        self._image_press_scene: QPointF | None = None  # for map-click detection
+        self._image_press_viewport: QPoint | None = None  # viewport pos at press (to distinguish click vs drag)
+
+        # Install on viewport for mouse; on view for keyboard (view gets focus when map is clicked)
+        self.image_view.viewport().installEventFilter(self)
+        self.image_view.installEventFilter(self)
+        self.leak_list.installEventFilter(self)
 
     def showEvent(self, event):
         super().showEvent(event)
         if not self._initial_splitter_set:
             QTimer.singleShot(50, self._set_initial_splitter_sizes)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        """Delete/Backspace removes selected leak regardless of which widget has focus."""
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.leak_list.currentRow() >= 0:
+            self._delete_selected_leak()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _apply_view_toggle_style(self):
+        """Style the view toggle as a pill switch (light blue track, white thumb)."""
+        is_thermal = self.view_toggle.value() == 1
+        groove_bg = "#b0c4de" if is_thermal else "#c0c0c0"
+        self.view_toggle.setStyleSheet(
+            """
+            QSlider::groove:horizontal {
+                height: 20px;
+                background: %s;
+                border: 1px solid #87a7c9;
+                border-radius: 10px;
+            }
+            QSlider::handle:horizontal {
+                width: 18px;
+                height: 18px;
+                margin: 1px 1px 1px 1px;
+                background: white;
+                border: 1px solid #ccc;
+                border-radius: 9px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #f8f8f8;
+            }
+            QSlider::sub-page:horizontal {
+                background: transparent;
+            }
+            QSlider::add-page:horizontal {
+                background: transparent;
+            }
+            """
+            % groove_bg
+        )
+
+    def _update_sensitivity_visibility(self):
+        """Show sensitivity slider and label only when Thermal view is selected."""
+        visible = self.view_toggle.value() == 1
+        self.sens_label.setVisible(visible)
+        self.slider.setVisible(visible)
+
+    def _on_view_toggle(self, value: int):
+        """Toggle switch: update groove color, sensitivity visibility, and redraw."""
+        self._apply_view_toggle_style()
+        self._update_sensitivity_visibility()
+        self.update_image()
+
+    def _update_file_info(self, info: list[dict]):
+        """Build file info from load_raster() result: each row has text and optional '?' with tooltip."""
+        # Clear current content
+        while self.file_info_layout.count():
+            item = self.file_info_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        # Build rows
+        for row in info:
+            text = row["text"]
+            tooltip = row.get("tooltip")
+            text_label = QLabel(text)
+            text_label.setWordWrap(True)
+            if tooltip is None:
+                self.file_info_layout.addWidget(text_label)
+            else:
+                row_layout = QHBoxLayout()
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.addWidget(text_label, 1)
+                help_btn = QPushButton("?")
+                help_btn.setToolTip(tooltip)
+                help_btn.setFlat(True)
+                help_btn.setFixedSize(22, 22)
+                help_btn.setStyleSheet(
+                    "QPushButton { color: #666; font-size: 12px; font-weight: bold; border: none; background: transparent; }"
+                    "QPushButton:hover { color: #333; background: #eee; border-radius: 11px; }"
+                )
+                help_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                help_btn.clicked.connect(
+                    (lambda t: lambda: QMessageBox.information(self, "Explanation", t))(tooltip)
+                )
+                row_layout.addWidget(help_btn, 0)
+                self.file_info_layout.addLayout(row_layout)
+
+    def _make_help_button(self, tooltip: str) -> QPushButton:
+        """Return a styled '?' button that shows tooltip in a message box on click."""
+        btn = QPushButton("?")
+        btn.setToolTip(tooltip)
+        btn.setFlat(True)
+        btn.setFixedSize(22, 22)
+        btn.setStyleSheet(
+            "QPushButton { color: #666; font-size: 12px; font-weight: bold; border: none; background: transparent; }"
+            "QPushButton:hover { color: #333; background: #eee; border-radius: 11px; }"
+        )
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(
+            (lambda t: lambda: QMessageBox.information(self, "Explanation", t))(tooltip)
+        )
+        return btn
 
     def _set_initial_splitter_sizes(self):
         """Set left panel to at least half the window width on first show."""
@@ -299,7 +551,8 @@ class MainWindow(QMainWindow):
 
         self.current_path = path
         info = load_raster(path)
-        self.status.setText(info)
+        self._update_file_info(info)
+        self.status.setText("")
 
         # Set robust defaults from image statistics so the first render is useful.
         # We pick a "dark" percentile as the initial threshold so leaks appear immediately.
@@ -323,24 +576,32 @@ class MainWindow(QMainWindow):
             self.size_slider.blockSignals(False)
 
         self.slider.setEnabled(True)
+        self.view_toggle.setEnabled(True)
         self.threshold_slider.setEnabled(True)
         self.size_slider.setEnabled(True)
         self.leak_count_label.setEnabled(True)
-        self.threshold_info_label.setEnabled(True)
-        self.debug_checkbox.setEnabled(True)
+        self.leak_list.setEnabled(True)
+        if _is_development():
+            self.threshold_info_label.setEnabled(True)
+            self.debug_checkbox.setEnabled(True)
         self.update_image()
 
     def update_image(self):
         if not self.current_path:
             return
 
+        # Preserve user-added leaks across new detection runs
+        prev_user_coords = set(self._user_added_leaks)
+        prev_last_leaks = list(self._last_leaks)
+
         sensitivity = self.slider.value()
         rgb_threshold = self.threshold_slider.value() / 10.0  # Convert to float (0.0-255.0)
+        self.thresh_label.setText(f"Intensity threshold (0–255): pixels above {rgb_threshold} are ignored")
         # Convert slider value to percentage using the configured step size
         min_size_percent = self.size_slider.value() * SIZE_STEP_PERCENT
-        
-        # Detect leaks (with or without debug steps)
-        if self.debug_checkbox.isChecked():
+
+        # Detect leaks (with or without debug steps; debug only in development)
+        if _is_development() and self.debug_checkbox.isChecked():
             leaks, detection_info, steps = detect_leaks(
                 self.current_path, rgb_threshold, min_size_percent, return_steps=True
             )
@@ -350,25 +611,51 @@ class MainWindow(QMainWindow):
                 self.current_path, rgb_threshold, min_size_percent
             )
 
-        self._last_leaks = leaks
-        self.export_kml_btn.setEnabled(len(leaks) > 0)
+        # Merge new automatic leaks with existing user-added leaks
+        user_leaks = [
+            (x, y, area)
+            for (x, y, area) in prev_last_leaks
+            if (x, y) in prev_user_coords
+        ]
+        auto_leaks = [
+            (x, y, area)
+            for (x, y, area) in leaks
+            if (x, y) not in prev_user_coords
+        ]
+        self._last_leaks = user_leaks + auto_leaks
+        self._leaks_sorted_by_size = sorted(self._last_leaks, key=lambda t: t[2])
+        # Keep _user_added_leaks as-is so user leaks survive slider changes
+        self.export_kml_btn.setEnabled(len(self._last_leaks) > 0)
+        self._update_clear_user_leaks_button()
 
-        # Update leak count
-        self.leak_count_label.setText(f"Leaks detected: {len(leaks)}")
+        # Clear list selection when detection changes (avoid stale highlight)
+        self._selected_leak_xy = None
+        self.leak_list.blockSignals(True)
+        self.leak_list.setCurrentCell(-1, -1)
+        self.leak_list.blockSignals(False)
+
+        # Update leak count (automatic + user-added)
+        self.leak_count_label.setText(f"Leaks detected: {len(self._last_leaks)}")
+
+        # Update leak table: sort by area (small to large), columns Leak and Source
+        self._repopulate_leak_table()
         
-        # Update threshold info display (single threshold)
-        thresh = detection_info.get('threshold', detection_info.get('max_threshold', 'N/A'))
-        before_count = detection_info.get('blobs_before_filtering', 'N/A')
-        after_count = detection_info.get('blobs_after_filtering', len(leaks))
-        self.threshold_info_label.setText(
-            f"Threshold: {thresh} (intensity > {thresh} ignored) | "
-            f"Min area: {detection_info['min_area_px']} px | "
-            f"Blobs: {before_count} → {after_count} (after filtering)"
-        )
-        
-        # Render image with leak markers (use original colors for debugging)
+        # Update threshold info display (development only)
+        if _is_development():
+            before_count = detection_info.get('blobs_before_filtering', 'N/A')
+            after_count = detection_info.get('blobs_after_filtering', detection_info.get('blobs_after_filtering', 'N/A'))
+            self.threshold_info_label.setText(
+                f"Blobs: {before_count} → {after_count} (after filtering)"
+            )
+
+        # Render image with leak markers (same order as table: by size, so map numbers match table rows)
         saved_sizes = self.splitter.sizes()
-        qimg = raster_to_qimage(self.current_path, sensitivity, leaks=leaks, use_original_colors=True)
+        centroids_xy = [(x, y) for x, y, _ in self._leaks_sorted_by_size]
+        use_original = self.view_toggle.value() == 0
+        qimg = raster_to_qimage(
+            self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=use_original,
+            highlight_xy=self._selected_leak_xy, user_added_xy=self._user_added_leaks,
+        )
         pixmap = QPixmap.fromImage(qimg)
         self.image_pixmap_item.setPixmap(pixmap)
         self.image_pixmap_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
@@ -378,10 +665,176 @@ class MainWindow(QMainWindow):
         )
         self._last_image_width = new_rect.width()
         self._last_image_height = new_rect.height()
+        # Update size label now we have dimensions (min/max/current in pixels)
+        total_px = self._last_image_width * self._last_image_height
+        if total_px > 0:
+            slider_max = int((MAX_SIZE_PERCENT - MIN_SIZE_PERCENT) / SIZE_STEP_PERCENT)
+            a_px = max(1, int((0 * SIZE_STEP_PERCENT / 100.0) * total_px))
+            b_px = max(1, int((slider_max * SIZE_STEP_PERCENT / 100.0) * total_px))
+            x_px = max(1, int((self.size_slider.value() * SIZE_STEP_PERCENT / 100.0) * total_px))
+            self.size_label.setText(f"Min size of leak ({a_px} - {b_px}): {x_px} pixels.")
+        else:
+            self.size_label.setText("Min size of leak (— — —): — pixels")
         self.image_scene.setSceneRect(new_rect)
         if size_changed:
             self.image_view.fitInView(new_rect, Qt.AspectRatioMode.KeepAspectRatio)
         self.splitter.setSizes(saved_sizes)
+
+    def _repopulate_leak_table(self):
+        """Fill the leak table from _leaks_sorted_by_size and _user_added_leaks."""
+        n = len(self._leaks_sorted_by_size)
+        self.leak_list.setRowCount(n)
+        for row, (x, y, area) in enumerate(self._leaks_sorted_by_size):
+            source = "User" if (x, y) in self._user_added_leaks else "Auto"
+            self.leak_list.setItem(row, 0, QTableWidgetItem(f"{area} px"))
+            self.leak_list.setItem(row, 1, QTableWidgetItem(source))
+
+    def _on_leak_list_selection_changed(self, row: int, col: int, _prev_row: int, _prev_col: int):
+        """When user selects a leak in the table, highlight that leak on the map."""
+        if not self._leaks_sorted_by_size or row < 0 or row >= len(self._leaks_sorted_by_size):
+            self._selected_leak_xy = None
+        else:
+            x, y, _ = self._leaks_sorted_by_size[row]
+            self._selected_leak_xy = (x, y)
+        self._refresh_display()
+
+    def _delete_selected_leak(self):
+        """Remove the currently selected leak from the list and update data/display."""
+        row = self.leak_list.currentRow()
+        if row < 0 or not self._leaks_sorted_by_size or row >= len(self._leaks_sorted_by_size):
+            return
+        x, y, _ = self._leaks_sorted_by_size[row]
+        self._user_added_leaks.discard((x, y))
+        # Remove this leak from _last_leaks (match by (x, y))
+        self._last_leaks = [(ax, ay, aa) for (ax, ay, aa) in self._last_leaks if (ax, ay) != (x, y)]
+        self._leaks_sorted_by_size = sorted(self._last_leaks, key=lambda t: t[2])
+        self._selected_leak_xy = None
+        self.leak_list.blockSignals(True)
+        self._repopulate_leak_table()
+        self.leak_list.setCurrentCell(-1, -1)
+        self.leak_list.blockSignals(False)
+        self.leak_count_label.setText(f"Leaks detected: {len(self._last_leaks)}")
+        self.export_kml_btn.setEnabled(len(self._last_leaks) > 0)
+        self._update_clear_user_leaks_button()
+        self._refresh_display()
+
+    def _clear_user_leaks(self):
+        """Remove all user-defined leaks; keep only auto-detected leaks."""
+        if not self._user_added_leaks:
+            return
+        self._last_leaks = [(x, y, a) for (x, y, a) in self._last_leaks if (x, y) not in self._user_added_leaks]
+        self._user_added_leaks.clear()
+        self._leaks_sorted_by_size = sorted(self._last_leaks, key=lambda t: t[2])
+        self._selected_leak_xy = None
+        self.leak_list.blockSignals(True)
+        self._repopulate_leak_table()
+        self.leak_list.setCurrentCell(-1, -1)
+        self.leak_list.blockSignals(False)
+        self.leak_count_label.setText(f"Leaks detected: {len(self._last_leaks)}")
+        self.export_kml_btn.setEnabled(len(self._last_leaks) > 0)
+        self._update_clear_user_leaks_button()
+        self._refresh_display()
+
+    def _update_clear_user_leaks_button(self):
+        """Enable 'Clear user-defined leaks' only when there are user-added leaks."""
+        self.clear_user_leaks_btn.setEnabled(len(self._user_added_leaks) > 0)
+
+    def _refresh_display(self):
+        """Redraw the image with current leaks and selection highlight (no re-detection)."""
+        if not self.current_path or not self._last_leaks:
+            return
+        sensitivity = self.slider.value()
+        centroids_xy = [(x, y) for x, y, _ in self._leaks_sorted_by_size]
+        use_original = self.view_toggle.value() == 0
+        qimg = raster_to_qimage(
+            self.current_path, sensitivity, leaks=centroids_xy, use_original_colors=use_original,
+            highlight_xy=self._selected_leak_xy, user_added_xy=self._user_added_leaks,
+        )
+        self.image_pixmap_item.setPixmap(QPixmap.fromImage(qimg))
+
+    def _viewport_to_scene(self, viewport_pos) -> QPointF:
+        """Convert viewport coordinates to scene coordinates."""
+        view_pos = self.image_view.viewport().mapTo(self.image_view, viewport_pos)
+        return self.image_view.mapToScene(view_pos)
+
+    def eventFilter(self, obj, event):
+        """Detect click on map: select nearest leak in list; Delete key removes selected leak."""
+        if obj is self.leak_list:
+            if event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                self._delete_selected_leak()
+                return True
+            return super().eventFilter(obj, event)
+        # View gets keyboard focus when user clicks map; viewport gets mouse events
+        if obj is self.image_view:
+            if event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                if self.leak_list.currentRow() >= 0:
+                    self._delete_selected_leak()
+                    return True
+            return super().eventFilter(obj, event)
+        if obj is not self.image_view.viewport():
+            return super().eventFilter(obj, event)
+        if event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if self.leak_list.currentRow() >= 0:
+                self._delete_selected_leak()
+                return True
+            return super().eventFilter(obj, event)
+        if event.type() == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton:
+                pt = event.position().toPoint()
+                self._image_press_scene = self._viewport_to_scene(pt)
+                self._image_press_viewport = pt
+            return super().eventFilter(obj, event)
+        if event.type() == QEvent.Type.MouseButtonRelease:
+            if event.button() == Qt.MouseButton.LeftButton and self._image_press_scene is not None and self._image_press_viewport is not None:
+                release_viewport = event.position().toPoint()
+                move_px = math.hypot(
+                    release_viewport.x() - self._image_press_viewport.x(),
+                    release_viewport.y() - self._image_press_viewport.y(),
+                )
+                # Only treat as click if mouse barely moved (short click); dragging the view = moved a lot
+                if move_px < 6 and self.current_path and self._last_image_width > 0 and self._last_image_height > 0:
+                    release_scene = self._viewport_to_scene(release_viewport)
+                    px, py = release_scene.x(), release_scene.y()
+                    best_i = -1
+                    best_d = 1e9
+                    for i, (x, y, _) in enumerate(self._leaks_sorted_by_size):
+                        d = math.hypot(px - x, py - y)
+                        if d < best_d:
+                            best_d = d
+                            best_i = i
+                    if best_i >= 0 and best_d < 30:
+                        # Click near existing leak: select it
+                        self.leak_list.blockSignals(True)
+                        self.leak_list.setCurrentCell(best_i, 0)
+                        self.leak_list.selectRow(best_i)
+                        self.leak_list.blockSignals(False)
+                        x, y, _ = self._leaks_sorted_by_size[best_i]
+                        self._selected_leak_xy = (x, y)
+                        self._refresh_display()
+                        self.image_view.setFocus(Qt.FocusReason.MouseFocusReason)
+                    else:
+                        # Click away from leaks: add new leak at this location
+                        ix = max(0, min(int(round(px)), self._last_image_width - 1))
+                        iy = max(0, min(int(round(py)), self._last_image_height - 1))
+                        self._last_leaks.append((ix, iy, 0))
+                        self._user_added_leaks.add((ix, iy))
+                        self._leaks_sorted_by_size = sorted(self._last_leaks, key=lambda t: t[2])
+                        self._selected_leak_xy = (ix, iy)
+                        self.leak_list.blockSignals(True)
+                        self._repopulate_leak_table()
+                        new_row = next(i for i, (x, y, _) in enumerate(self._leaks_sorted_by_size) if (x, y) == (ix, iy))
+                        self.leak_list.setCurrentCell(new_row, 0)
+                        self.leak_list.selectRow(new_row)
+                        self.leak_list.blockSignals(False)
+                        self.leak_count_label.setText(f"Leaks detected: {len(self._last_leaks)}")
+                        self.export_kml_btn.setEnabled(True)
+                        self._update_clear_user_leaks_button()
+                        self._refresh_display()
+                        self.image_view.setFocus(Qt.FocusReason.MouseFocusReason)
+            self._image_press_scene = None
+            self._image_press_viewport = None
+            return super().eventFilter(obj, event)
+        return super().eventFilter(obj, event)
 
     def export_leaks_kml(self):
         """Open save dialog and export current leak centroids to a KML file."""
@@ -397,7 +850,8 @@ class MainWindow(QMainWindow):
             return
         path = str(Path(path).with_suffix(".kml"))
         try:
-            export_leaks_to_kml(self.current_path, self._last_leaks, path)
+            centroids_xy = [(x, y) for x, y, _ in self._last_leaks]
+            export_leaks_to_kml(self.current_path, centroids_xy, path)
             n = len(self._last_leaks)
             self.status.setText(f"Exported {n} leak(s) to {path}")
         except Exception as e:
