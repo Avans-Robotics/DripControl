@@ -19,7 +19,7 @@ On **Windows**, from the `Avans-thermal-leak-detector` directory:
    ```bash
    Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
    ```
-   1b. Activate in normal command window:
+   1b. Activate the same window:
    ```bash
    venv\Scripts\Activate.ps1
    ```
@@ -31,7 +31,7 @@ On **Windows**, from the `Avans-thermal-leak-detector` directory:
    ```
 3. Build:
    ```bash
-   pyinstaller --noconfirm thermal_leak_detector.spec
+   python -m Pyinstaller --noconfirm thermal_leak_detector.spec
    ```
    Or double‑click `build_exe.bat`.
 
