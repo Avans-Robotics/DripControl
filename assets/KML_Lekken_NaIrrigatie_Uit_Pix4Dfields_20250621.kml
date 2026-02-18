@@ -1,0 +1,311 @@
+<?xml version='1.0' encoding='utf-8'?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+ <Document id="root_doc">
+  <Schema id="layer" name="layer">
+   <SimpleField name="color" type="string"/>
+   <SimpleField name="creationDate" type="string"/>
+   <SimpleField name="fill" type="float"/>
+   <SimpleField name="visualType" type="string"/>
+  </Schema>
+  <Placemark>
+   <name>1</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:25:36Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32213354213161,50.8012321266142</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>2</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:25:48Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.3226537881992,50.8011199862338</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>3</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:25:56Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32297731499079,50.8013280504131</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>4</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:26:02Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32300804865602,50.8015999860072</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>5</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:26:14Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32308980153121,50.8019735397779</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>6</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:26:24Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32262704372991,50.8023570523114</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>7</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:26:27Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.322853205939,50.802547069985</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>8</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:26:31Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32321772625804,50.8025756566467</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>9</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:26:43Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32336140575802,50.8020711835706</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>10</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:26:54Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32349627407274,50.8022792481572</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>11</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:27:01Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32419023651013,50.8022938675971</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>12</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:27:06Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32361193449518,50.8024272697485</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>13</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:27:13Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32347025048577,50.8024491988371</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>14</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:27:17Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32340374576719,50.8026520423824</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>15</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:27:20Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32351651465476,50.8027671694133</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>16</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:27:25Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.3238316892654,50.8027836161059</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>17</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:27:37Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.3240225693643,50.802481585818</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>18</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:27:42Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32409428126255,50.8029973860925</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>19</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:28:21Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32286678614568,50.802172155972</coordinates>
+   </Point>
+  </Placemark>
+  <Placemark>
+   <name>20</name>
+   <description/>
+   <ExtendedData>
+    <SchemaData schemaUrl="#layer">
+     <SimpleData name="color">#40c4ff</SimpleData>
+     <SimpleData name="creationDate">2025-06-23T08:29:01Z</SimpleData>
+     <SimpleData name="fill">0</SimpleData>
+     <SimpleData name="visualType">ANNOTATION</SimpleData>
+    </SchemaData>
+   </ExtendedData>
+   <Point>
+    <coordinates>3.32404009531831,50.8022659975614</coordinates>
+   </Point>
+  </Placemark>
+ </Document>
+</kml>
