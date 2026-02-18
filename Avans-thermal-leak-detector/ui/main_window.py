@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QMessageBox,
 )
 
-from PySide6.QtCore import Qt, QRect, QRectF, QPointF, QTimer, QEvent
+from PySide6.QtCore import Qt, QRect, QRectF, QPoint, QPointF, QTimer, QEvent
 from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter, QKeyEvent
 from PySide6.QtSvg import QSvgRenderer
 from pathlib import Path
@@ -167,8 +167,6 @@ class MainWindow(QMainWindow):
         self.leak_count_label.setEnabled(False)
 
         # Table of detected leaks (sorted by size, small → large); columns: Leak (index + size), Source (Auto/User)
-        self.leak_list_label = QLabel("Leaks (by size, small → large)")
-        self.leak_list_label.setEnabled(False)
         self.leak_list = QTableWidget()
         self.leak_list.setColumnCount(2)
         self.leak_list.setHorizontalHeaderLabels(["Leak", "Source"])
@@ -206,6 +204,10 @@ class MainWindow(QMainWindow):
         top_buttons.addWidget(self.load_btn)
         top_buttons.addWidget(self.export_kml_btn)
         top_buttons.addStretch()
+        top_buttons.addWidget(self._make_help_button(
+            "Load GeoTIFF: open a thermal GeoTIFF image. Export to KML: save the current leak "
+            "locations to a KML file for use in GIS or mapping applications (e.g. Google Earth)."
+        ))
         file_layout.addLayout(top_buttons)
         file_layout.addWidget(self.file_info_container)
         file_layout.addWidget(self.status)
@@ -224,6 +226,11 @@ class MainWindow(QMainWindow):
         self.sens_label.setWordWrap(True)
         view_row.addWidget(self.sens_label)
         view_row.addWidget(self.slider)
+        view_row.addWidget(self._make_help_button(
+            "Original: show the image as captured. Thermal: apply a color gradient to highlight "
+            "temperature (darker = cooler). The Color Gradient slider (in Thermal mode) adjusts "
+            "the contrast of the colormap so leaks stand out better."
+        ))
         view_layout.addLayout(view_row)
         view_group.setLayout(view_layout)
         left_layout.addWidget(view_group)
@@ -233,15 +240,29 @@ class MainWindow(QMainWindow):
         # --- Leak detection settings: thresholds, debug ---
         leak_settings_group = QGroupBox("Leak detection settings")
         leak_settings_layout = QVBoxLayout()
+        thresh_row = QHBoxLayout()
+        thresh_row.setContentsMargins(0, 0, 0, 0)
         self.thresh_label = QLabel("Intensity threshold (0–255): pixels above — are ignored")
         self.thresh_label.setWordWrap(True)
-        leak_settings_layout.addWidget(self.thresh_label)
+        thresh_row.addWidget(self.thresh_label, 1)
+        thresh_row.addWidget(self._make_help_button(
+            "Pixels with intensity above this value are ignored; only darker (colder) pixels are "
+            "considered as possible leaks. Lower = stricter (fewer leaks); higher = more candidates."
+        ))
+        leak_settings_layout.addLayout(thresh_row)
         leak_settings_layout.addWidget(self.threshold_slider)
         if _is_development():
             leak_settings_layout.addWidget(self.threshold_info_label)
+        size_row = QHBoxLayout()
+        size_row.setContentsMargins(0, 0, 0, 0)
         self.size_label = QLabel("Min size of leak (— — —): — pixels")
         self.size_label.setWordWrap(True)
-        leak_settings_layout.addWidget(self.size_label)
+        size_row.addWidget(self.size_label, 1)
+        size_row.addWidget(self._make_help_button(
+            "Minimum area (in pixels) for a region to count as a leak. Increase to filter out small "
+            "spots; decrease to catch smaller leaks."
+        ))
+        leak_settings_layout.addLayout(size_row)
         leak_settings_layout.addWidget(self.size_slider)
         if _is_development():
             leak_settings_layout.addWidget(self.debug_checkbox)
@@ -251,8 +272,15 @@ class MainWindow(QMainWindow):
         # --- Leak detection results: count and table ---
         leak_results_group = QGroupBox("Leak detection results")
         leak_results_layout = QVBoxLayout()
-        leak_results_layout.addWidget(self.leak_count_label)
-        leak_results_layout.addWidget(self.leak_list_label)
+        leak_count_row = QHBoxLayout()
+        leak_count_row.setContentsMargins(0, 0, 0, 0)
+        leak_count_row.addWidget(self.leak_count_label, 0)
+        leak_count_row.addWidget(self._make_help_button(
+            "List of detected leaks, sorted by size (small to large). Click a row to highlight the "
+            "leak on the map. Click on the map to add a leak at that location; select a leak and "
+            "press Delete to remove it. 'Clear user-defined leaks' removes only leaks you added manually."
+        ), 0)
+        leak_results_layout.addLayout(leak_count_row)
         leak_results_layout.addWidget(self.leak_list)
         leak_results_layout.addWidget(self.clear_user_leaks_btn)
         leak_results_group.setLayout(leak_results_layout)
@@ -363,6 +391,7 @@ class MainWindow(QMainWindow):
         self._last_image_height = 0
         self._initial_splitter_set = False
         self._image_press_scene: QPointF | None = None  # for map-click detection
+        self._image_press_viewport: QPoint | None = None  # viewport pos at press (to distinguish click vs drag)
 
         # Install on viewport for mouse; on view for keyboard (view gets focus when map is clicked)
         self.image_view.viewport().installEventFilter(self)
@@ -461,6 +490,22 @@ class MainWindow(QMainWindow):
                 row_layout.addWidget(help_btn, 0)
                 self.file_info_layout.addLayout(row_layout)
 
+    def _make_help_button(self, tooltip: str) -> QPushButton:
+        """Return a styled '?' button that shows tooltip in a message box on click."""
+        btn = QPushButton("?")
+        btn.setToolTip(tooltip)
+        btn.setFlat(True)
+        btn.setFixedSize(22, 22)
+        btn.setStyleSheet(
+            "QPushButton { color: #666; font-size: 12px; font-weight: bold; border: none; background: transparent; }"
+            "QPushButton:hover { color: #333; background: #eee; border-radius: 11px; }"
+        )
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(
+            (lambda t: lambda: QMessageBox.information(self, "Explanation", t))(tooltip)
+        )
+        return btn
+
     def _set_initial_splitter_sizes(self):
         """Set left panel to at least half the window width on first show."""
         if self._initial_splitter_set:
@@ -513,7 +558,6 @@ class MainWindow(QMainWindow):
         self.threshold_slider.setEnabled(True)
         self.size_slider.setEnabled(True)
         self.leak_count_label.setEnabled(True)
-        self.leak_list_label.setEnabled(True)
         self.leak_list.setEnabled(True)
         if _is_development():
             self.threshold_info_label.setEnabled(True)
@@ -714,14 +758,20 @@ class MainWindow(QMainWindow):
             return super().eventFilter(obj, event)
         if event.type() == QEvent.Type.MouseButtonPress:
             if event.button() == Qt.MouseButton.LeftButton:
-                self._image_press_scene = self._viewport_to_scene(event.position().toPoint())
+                pt = event.position().toPoint()
+                self._image_press_scene = self._viewport_to_scene(pt)
+                self._image_press_viewport = pt
             return super().eventFilter(obj, event)
         if event.type() == QEvent.Type.MouseButtonRelease:
-            if event.button() == Qt.MouseButton.LeftButton and self._image_press_scene is not None:
-                release_scene = self._viewport_to_scene(event.position().toPoint())
-                dx = release_scene.x() - self._image_press_scene.x()
-                dy = release_scene.y() - self._image_press_scene.y()
-                if math.hypot(dx, dy) < 12 and self.current_path and self._last_image_width > 0 and self._last_image_height > 0:
+            if event.button() == Qt.MouseButton.LeftButton and self._image_press_scene is not None and self._image_press_viewport is not None:
+                release_viewport = event.position().toPoint()
+                move_px = math.hypot(
+                    release_viewport.x() - self._image_press_viewport.x(),
+                    release_viewport.y() - self._image_press_viewport.y(),
+                )
+                # Only treat as click if mouse barely moved (short click); dragging the view = moved a lot
+                if move_px < 6 and self.current_path and self._last_image_width > 0 and self._last_image_height > 0:
+                    release_scene = self._viewport_to_scene(release_viewport)
                     px, py = release_scene.x(), release_scene.y()
                     best_i = -1
                     best_d = 1e9
@@ -760,6 +810,7 @@ class MainWindow(QMainWindow):
                         self._refresh_display()
                         self.image_view.setFocus(Qt.FocusReason.MouseFocusReason)
             self._image_press_scene = None
+            self._image_press_viewport = None
             return super().eventFilter(obj, event)
         return super().eventFilter(obj, event)
 
