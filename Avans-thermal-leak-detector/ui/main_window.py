@@ -197,6 +197,28 @@ class MainWindow(QMainWindow):
         # Left panel: controls in logical groups
         left_layout = QVBoxLayout()
 
+        # --- General help for first-time users ---
+        how_to_use_btn = QPushButton("How to use")
+        how_to_use_btn.setMaximumWidth(120)
+        def _show_how_to_use():
+            msg = QMessageBox(self)
+            msg.setWindowTitle("How to use")
+            msg.setTextFormat(Qt.TextFormat.RichText)
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setText(
+                "1. <b>Load GeoTIFF:</b> Open a thermal GeoTIFF image using the \"Load GeoTIFF\" button.<br><br>"
+                "2. <b>View leaks and adjust:</b> Leaks are detected automatically. Use the \"Leak detection settings\" "
+                "sliders (intensity threshold and min size) to refine which regions count as leaks. Switch to "
+                "Thermal view and adjust the Color Gradient to see temperature contrast.<br><br>"
+                "3. <b>Add or remove leaks:</b> Click on the map to add a leak at that location. Select a leak in the "
+                "list and press Delete to remove it. Use \"Clear user-defined leaks\" to remove only leaks you added.<br><br>"
+                "4. <b>Export to KML:</b> When satisfied, use \"Export to KML\" to save leak locations for use in "
+                "GIS or mapping tools (e.g. Google Earth)."
+            )
+            msg.exec()
+        how_to_use_btn.clicked.connect(_show_how_to_use)
+        left_layout.addWidget(how_to_use_btn)
+
         # --- File group: load, export, file info ---
         file_group = QGroupBox("File")
         file_layout = QVBoxLayout()
