@@ -3,6 +3,7 @@
 # One-file build: output is dist/Thermal Leak Detector.exe
 
 import os
+import sys
 import rasterio
 
 block_cipher = None
@@ -10,6 +11,8 @@ block_cipher = None
 # Bundle ui logos so _ui_dir() / "logos" works when frozen
 # Bundle rasterio's proj_data (contains proj.db) so PROJ can resolve CRS / EPSG when frozen
 _proj_data_src = os.path.join(os.path.dirname(rasterio.__file__), 'proj_data')
+# UPX can break macOS code signing / notarization; disable on darwin
+_upx = sys.platform != 'darwin'
 
 a = Analysis(
     ['app.py'],
@@ -24,6 +27,7 @@ a = Analysis(
         'rasterio', 'rasterio.sample', 'rasterio._shim', 'rasterio.control',
         'rasterio.crs', 'rasterio.vrt', 'rasterio.warp', 'rasterio.enums',
         'rasterio._features', 'rasterio.features',
+        'rasterio.serde', 'rasterio._env', 'rasterio._base',
     ],
     hookspath=[],
     hooksconfig={},
@@ -49,7 +53,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=_upx,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
