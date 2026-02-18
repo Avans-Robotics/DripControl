@@ -18,21 +18,19 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        working-directory: Avans-thermal-leak-detector
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
 
       - name: Build executable
-        working-directory: Avans-thermal-leak-detector
         run: pyinstaller --noconfirm thermal_leak_detector.spec
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: Thermal-Leak-Detector-Windows
-          path: Avans-thermal-leak-detector/dist/Thermal Leak Detector.exe
+          path: dist/Thermal Leak Detector.exe
 
   build-macos:
     runs-on: macos-14
@@ -45,18 +43,16 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        working-directory: Avans-thermal-leak-detector
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
 
       - name: Build executable
-        working-directory: Avans-thermal-leak-detector
         run: pyinstaller --noconfirm thermal_leak_detector.spec
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: Thermal-Leak-Detector-macOS
-          path: Avans-thermal-leak-detector/dist/Thermal Leak Detector
+          path: dist/Thermal Leak Detector

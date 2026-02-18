@@ -11,7 +11,7 @@ pip install -r requirements.txt
 
 ## Building a Windows .exe
 
-On **Windows**, from the `Avans-thermal-leak-detector` directory:
+On **Windows**, from the project root:
 
 1. Activate venv on Windows:
    
