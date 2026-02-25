@@ -52,14 +52,14 @@ jobs:
       - name: Build executable
         run: pyinstaller --noconfirm thermal_leak_detector.spec
 
-      # - name: Zip the macOS App
-      #   run: |
-      #     # Ga naar de dist map en zip de .app map
-      #     cd dist
-      #     zip -r Thermal-Leak-Detector-macOS.zip "Thermal Leak Detector.app"
+      - name: Zip the macOS App
+        run: |
+          # Ga naar de dist map en zip de .app map
+          cd dist
+          zip -r Thermal-Leak-Detector-macOS.zip "Thermal Leak Detector.app"
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: Thermal-Leak-Detector-macOS
-          path: dist/Thermal Leak Detector.app
+          path: dist/Thermal-Leak-Detector-macOS.zip
