@@ -49,10 +49,17 @@ jobs:
           pip install pyinstaller
 
       - name: Build executable
-        run: pyinstaller --noconfirm --windowed thermal_leak_detector.spec
+        run: pyinstaller --noconfirm thermal_leak_detector.spec
 
-      - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
+      - name: Zip the macOS App
+        run: |
+          # Ga naar de dist map en zip de .app map
+          cd dist
+          zip -r Thermal-Leak-Detector-macOS.zip "Thermal Leak Detector.app"
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
         with:
-          name: Thermal-Leak-Detector-macOS
-          path: dist/Thermal Leak Detector
+          files: dist/Thermal-Leak-Detector-macOS.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

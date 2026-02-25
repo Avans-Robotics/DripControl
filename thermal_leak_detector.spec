@@ -63,3 +63,15 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
+app = BUNDLE(
+    exe,
+    name='Thermal Leak Detector.app',
+    icon=None,  # Als je een .icns bestand hebt, kun je hier het pad invullen
+    bundle_identifier='com.avans.thermal-leak-detector',
+    info_plist={
+        'CFBundleShortVersionString': '3.0.0',
+        'CFBundleBundleName': 'Thermal Leak Detector',
+        'NSHighResolutionCapable': 'True',
+    },
+)
