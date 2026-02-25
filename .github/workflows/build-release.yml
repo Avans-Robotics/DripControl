@@ -3,7 +3,8 @@ name: Build Windows and macOS
 
 on:
   push:
-    branches: [main, master, feat/detect_leak_app]
+    branches: [main]
+    tags: [v*]
   workflow_dispatch:
 
 jobs:
@@ -61,5 +62,6 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: dist/Thermal-Leak-Detector-macOS.zip
+          tag_name: ${{ github.ref_name }} # Forceert het gebruik van de huidige tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
